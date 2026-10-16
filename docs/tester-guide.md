@@ -12,7 +12,7 @@ anything that confuses you or takes longer than it should: confusion is a findin
 
 ## Before you start
 
-- macOS or Linux (Windows through WSL), and about 1.5 GB free if you download Laya.
+- macOS or Linux for the installer (Windows through WSL), and about 1.5 GB free if you download Laya.
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) for the samples and Python examples
   (it fetches a suitable Python by itself). Node 22+ only if you want the TypeScript examples.
 - Optional: [Ollama](https://ollama.com) with a model (`ollama pull qwen3:8b`), or an API key for a
@@ -209,4 +209,5 @@ Please don't paste API keys or customer data from your runs.
 - **Steering and replay hooks** install from `~/.neatroots/app/steer` until they are published to
   PyPI and npm.
 - **Coding agents in the app** need the Claude Code or Codex CLI installed and signed in.
-- **Windows:** only through WSL.
+- **Windows:** the installer needs WSL. From a source checkout, neatroots runs on Windows, but the
+  background service and `neatroots update` need macOS or Linux.

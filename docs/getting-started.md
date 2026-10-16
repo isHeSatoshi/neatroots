@@ -24,7 +24,7 @@ The installer:
 - asks whether to download Laya, the local decision model (about 1.4 GB, once; see section 3). Answer no and set up Jev cloud instead;
 - needs no sudo and changes nothing outside your home folder, except the MCP settings of agents you agree to connect.
 
-You need macOS or Linux (on Windows, use WSL) and about 70 MB of disk, plus about 1.5 GB if you download Laya.
+You need macOS or Linux for the installer (on Windows, use WSL), and about 70 MB of disk, plus about 1.5 GB if you download Laya. From a source checkout, neatroots runs on Windows and anywhere else Node 22 runs: `pnpm install && pnpm build`, then `node packages/neatroots/dist/cli.js start`. The background service and `neatroots update` need macOS or Linux.
 
 Everything lands in `~/.neatroots/app`: the app, the steering hooks (`steer/`), the docs, and 15 runnable examples (`examples/`).
 

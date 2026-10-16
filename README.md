@@ -98,7 +98,11 @@ neatroots start                    # open http://localhost:4100
 The installer downloads one prebuilt bundle (about 17 MB, macOS and Linux, arm64 and x64) into
 `~/.neatroots`, uses your Node.js if it is 22 or newer (otherwise it fetches its own), puts a
 `neatroots` command in `~/.local/bin`, and offers to connect the coding agents it finds. No sudo, no
-git, no build. Add `-s -- --service` to run neatroots at login. On Windows, use WSL.
+git, no build. Add `-s -- --service` to run neatroots at login. The installer and the prebuilt
+bundle target macOS and Linux; on Windows, use WSL. From a source checkout, neatroots runs on
+Windows and anywhere else Node 22 runs: `pnpm install && pnpm build`, then
+`node packages/neatroots/dist/cli.js start`. The background service and `neatroots update` need macOS
+or Linux.
 
 The installer then asks whether to download Laya, the open model that answers neatroots' yes/no
 checks on your machine (about 1.4 GB, once). Say no and set up Jev cloud for those answers instead
