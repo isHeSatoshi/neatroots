@@ -1,4 +1,5 @@
 import os from "node:os";
+import path from "node:path";
 import type { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { Roots } from "../core.js";
@@ -15,6 +16,7 @@ import { importSource, mountExploreApi } from "./api-explore.js";
 import { checkCoverage } from "./coverage.js";
 import { installInfo } from "../util/install.js";
 import { err, body, clampInt } from "./util.js";
+import { checkDirState } from "../checks/registry.js";
 import { askRuns } from "../engine/assist.js";
 import { loadTrace } from "../engine/trace.js";
 import { UnknownSpanError } from "../engine/engine.js";
@@ -295,6 +297,21 @@ export function mountApi(app: Hono, roots: Roots): void {
         return err(c, 400, `invalid pattern: ${p}`);
       }
     }
+    // A check_dir is checked here with the rest, before anything is pushed or saved. Registering one
+    // used to reload straight away, so a path that wasn't a directory threw out of this handler: the
+    // reply was a 500, the bad path stayed on config.checkDirs, and the next settings save wrote it
+    // into config.yaml, where the next start died inside the CheckRegistry constructor (#224).
+    let checkDir: string | undefined;
+    if (b.check_dir !== undefined) {
+      if (typeof b.check_dir !== "string" || !b.check_dir.trim()) return err(c, 400, "check_dir must be a directory path");
+      if (!path.isAbsolute(b.check_dir.trim())) return err(c, 400, "check_dir must be an absolute path");
+      // Stored resolved, the way `neatroots init` stores one, so a trailing separator or a `..`
+      // still points at the same directory on the next start. A directory that isn't there yet is
+      // accepted: CheckRegistry.save() creates it, and `neatroots init` registers one the same way.
+      checkDir = path.resolve(b.check_dir.trim());
+      const state = checkDirState(checkDir);
+      if (!state.ok && !state.creatable) return err(c, 400, `check_dir ${checkDir} ${state.reason}`);
+    }
     if (b.project) {
       const cur = roots.config.projects[b.project] ?? {};
       if (b.steering !== undefined) roots.steering.setMode(b.project, b.steering);
@@ -316,8 +333,9 @@ export function mountApi(app: Hono, roots: Roots): void {
     roots.decisions.reset();
     if (b.cloud_endpoint) roots.config.cloud.endpoint = b.cloud_endpoint;
     if (b.redact_patterns) roots.config.cloud.redactPatterns = b.redact_patterns;
-    if (b.check_dir && !roots.config.checkDirs.includes(b.check_dir)) {
-      roots.config.checkDirs.push(b.check_dir);
+    if (checkDir && !roots.config.checkDirs.includes(checkDir)) {
+      // Validated above, and reload() records anything it can't load instead of throwing.
+      roots.config.checkDirs.push(checkDir);
       roots.checks.reload();
     }
     roots.saveConfig();
