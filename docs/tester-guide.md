@@ -209,5 +209,8 @@ Please don't paste API keys or customer data from your runs.
 - **Steering and replay hooks** install from `~/.neatroots/app/steer` until they are published to
   PyPI and npm.
 - **Coding agents in the app** need the Claude Code or Codex CLI installed and signed in.
-- **Windows:** the installer needs WSL. From a source checkout, neatroots runs on Windows, but the
-  background service and `neatroots update` need macOS or Linux.
+- **Windows:** the installer needs WSL. From a source checkout, the server and the app run on
+  Windows, but the background service and `neatroots update` need macOS or Linux, `neatroots connect`
+  writes the VS Code and Claude Desktop config to the macOS/Linux location, and the in-app coding
+  agent chat finds its CLI through a POSIX shell. See
+  [#314](https://github.com/neatlogs/neatroots/issues/314).
