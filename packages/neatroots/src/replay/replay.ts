@@ -6,7 +6,7 @@ import { toBatches, type SpanNode } from "../ingest/build.js";
 import type { ChatMessage } from "../models/llm.js";
 import type { Plain } from "../otlp/types.js";
 import { attr } from "../otlp/types.js";
-import { preview } from "../semantics/view.js";
+import { isSystemRole, preview } from "../semantics/view.js";
 import { log } from "../util/log.js";
 
 // Replays. An LLM-call replay re-sends one LLM span's messages (as edited) to the configured LLM
@@ -78,7 +78,7 @@ export function toChat(messages: Plain | undefined): ChatMessage[] {
       content = `${content}${content ? "\n" : ""}[called ${calls}]`;
     }
     if (role === "tool" || role === "function") out.push({ role: "user", content: `[tool result${msg.name ? ` from ${msg.name}` : ""}]\n${content}` });
-    else out.push({ role: role === "system" || role === "assistant" ? role : "user", content });
+    else out.push({ role: isSystemRole(role) ? "system" : role === "assistant" ? "assistant" : "user", content });
   }
   return out;
 }
