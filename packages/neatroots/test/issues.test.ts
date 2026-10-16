@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { decodeTraceJson } from "../src/otlp/codec.js";
-import { batch, hex, makeRoots, span, type TestRoots } from "./helpers.js";
+import { finalOutput, loadTrace, runGoal, runRoot } from "../src/engine/trace.js";
+import { batch, hex, llmSpan, makeRoots, s, span, type TestRoots } from "./helpers.js";
 
 // Bad input from outside (#11–#14): a buggy exporter or a script must get a clear error, and one
 // odd trace must never break the run page.
@@ -85,5 +86,141 @@ describe("spans without a proper end time (#14)", () => {
     tb.roots.ingest([batch([{ ...s, endTimeUnixNano: (BigInt(s.startTimeUnixNano) - 5_000_000_000n).toString() }])]);
     const d = (await (await fetch(`${tb.url}/api/runs/${t}`)).json()) as { run: { duration_ms: number } };
     expect(d.run.duration_ms).toBe(0);
+  });
+});
+
+describe("a run whose top span has a remote parent (#157)", () => {
+  it("ends on that span and reads it as the root", async () => {
+    const tb = await makeRoots({ noEngine: true });
+    cleanup.push(tb.close);
+    const t = hex(16);
+    const remote = hex(8); // the caller's span id, from a propagated traceparent; never sent here
+    const root = span({
+      traceId: t,
+      parent: remote,
+      name: "POST /chat",
+      kind: "workflow",
+      flags: 0x300,
+      attrs: [s("neatlogs.session.id", "sess-r"), s("neatlogs.workflow.input", '{"q":"hello"}'), s("neatlogs.workflow.output", '"hi there"')],
+    });
+    const u = tb.roots.ingest([batch([root, llmSpan(t, root.spanId, { user: "hello", out: "hi there" })])]);
+    expect(u[0]).toMatchObject({ runCreated: true, rootEnded: true });
+    expect(tb.roots.store.getRun(t)).toMatchObject({
+      status: "ok",
+      root_span_id: root.spanId,
+      root_name: "POST /chat",
+      root_ended: 1,
+      session_id: "sess-r",
+    });
+    // The flags survive the round trip, so exports stay exact.
+    expect(tb.roots.store.getOtlpSpan(t, root.spanId)!.span.flags).toBe(0x300);
+    // The engine reads the same root.
+    const snap = loadTrace(tb.roots.store, t);
+    expect(runGoal(snap).rootInput).toBe('{"q":"hello"}');
+    expect(finalOutput(snap)).toBe("hi there");
+  });
+
+  it("stays open when the remote bit is not declared", async () => {
+    const tb = await makeRoots({ noEngine: true });
+    cleanup.push(tb.close);
+    const t = hex(16);
+    tb.roots.ingest([batch([span({ traceId: t, parent: hex(8), name: "POST /chat", kind: "workflow", flags: 0x200 })])]);
+    expect(tb.roots.store.getRun(t)).toMatchObject({ status: "running", root_name: null, root_ended: 0 });
+  });
+
+  it("keeps the caller's span as the root when both processes export to this neatroots", async () => {
+    const tb = await makeRoots({ noEngine: true });
+    cleanup.push(tb.close);
+    const t = hex(16);
+    const caller = span({
+      traceId: t,
+      name: "caller-agent",
+      kind: "workflow",
+      attrs: [s("neatlogs.session.id", "sess-caller"), s("neatlogs.workflow.input", '{"q":"hello"}'), s("neatlogs.workflow.output", '"from the caller"')],
+    });
+    // The caller is still running, so it is exported before it ends, the way a streaming exporter does.
+    tb.roots.ingest([batch([{ ...caller, endTimeUnixNano: "0" }])]);
+    // The callee got its context from the caller, and that span is in this trace.
+    const callee = span({ traceId: t, parent: caller.spanId, name: "tool-service", kind: "workflow", flags: 0x300, attrs: [s("neatlogs.session.id", "sess-callee")] });
+    const u = tb.roots.ingest([batch([callee])]);
+
+    // The remote bit alone doesn't make it the top span: the run stays open on the caller's span.
+    expect(u[0]).toMatchObject({ rootEnded: false });
+    expect(tb.roots.store.getRun(t)).toMatchObject({
+      status: "running",
+      root_span_id: caller.spanId,
+      root_name: "caller-agent",
+      root_ended: 0,
+      session_id: "sess-caller",
+    });
+    // The engine reads that root too, not the callee.
+    const snap = loadTrace(tb.roots.store, t);
+    expect(runRoot(snap.spans)?.id).toBe(caller.spanId);
+    expect(runGoal(snap).rootInput).toBe('{"q":"hello"}');
+    expect(finalOutput(snap)).toBe("from the caller");
+
+    // It ends when the caller's own span ends.
+    tb.roots.ingest([batch([caller])]);
+    expect(tb.roots.store.getRun(t)).toMatchObject({ status: "ok", root_span_id: caller.spanId, root_name: "caller-agent", root_ended: 1 });
+  });
+
+  it("does not take a later remote-parent span as the root over the span already there", async () => {
+    const tb = await makeRoots({ noEngine: true });
+    cleanup.push(tb.close);
+    const t = hex(16);
+    const caller = span({ traceId: t, name: "caller-agent", kind: "workflow" });
+    tb.roots.ingest([batch([caller])]);
+    // A second agent in the trace, parented to an id this trace never receives, arriving late.
+    const other = span({ traceId: t, parent: hex(8), name: "tool-service", kind: "workflow", flags: 0x300, status: 2, message: "boom" });
+    tb.roots.ingest([batch([other])]);
+
+    expect(tb.roots.store.getRun(t)).toMatchObject({ status: "ok", root_span_id: caller.spanId, root_name: "caller-agent" });
+    expect(runRoot(loadTrace(tb.roots.store, t).spans)?.id).toBe(caller.spanId);
+  });
+
+  it("reads the parentless span as the root even when a remote-parent span starts first", async () => {
+    const tb = await makeRoots({ noEngine: true });
+    cleanup.push(tb.close);
+    const t = hex(16);
+    const caller = span({ traceId: t, name: "caller-agent", kind: "workflow", attrs: [s("neatlogs.workflow.input", '{"q":"hello"}')] });
+    // The callee's clock is two seconds ahead, so it sorts first in the trace even though its parent
+    // is right here. The engine reads spans in that order, and must still pick the caller's span.
+    const callee = span({ traceId: t, parent: caller.spanId, name: "tool-service", kind: "workflow", flags: 0x300 });
+    tb.roots.ingest([batch([caller, { ...callee, startTimeUnixNano: (BigInt(caller.startTimeUnixNano) - 2_000_000_000n).toString() }])]);
+
+    const snap = loadTrace(tb.roots.store, t);
+    expect(snap.spans[0].name).toBe("tool-service"); // it does sort first
+    expect(runRoot(snap.spans)?.id).toBe(caller.spanId);
+    expect(runGoal(snap).rootInput).toBe('{"q":"hello"}');
+  });
+
+  it("lets the run's top span name the session, not a child that arrived first", async () => {
+    const tb = await makeRoots({ noEngine: true });
+    cleanup.push(tb.close);
+    const t = hex(16);
+    const remote = hex(8);
+    // A child of the caller's span, arriving before it, with a session of its own.
+    tb.roots.ingest([batch([span({ traceId: t, parent: remote, name: "tool-service", kind: "tool", attrs: [s("neatlogs.session.id", "sess-child")] })])]);
+    expect(tb.roots.store.getRun(t)!.session_id).toBe("sess-child");
+    // The top span, whose parent stayed outside the trace, is what the session belongs to.
+    tb.roots.ingest([batch([span({ traceId: t, parent: remote, name: "POST /chat", kind: "workflow", flags: 0x300, attrs: [s("neatlogs.session.id", "sess-root")] })])]);
+
+    expect(tb.roots.store.getRun(t)).toMatchObject({ root_name: "POST /chat", session_id: "sess-root" });
+  });
+
+  it("hands the root back to the caller's span when the callee reached neatroots first", async () => {
+    const tb = await makeRoots({ noEngine: true });
+    cleanup.push(tb.close);
+    const t = hex(16);
+    const callerId = hex(8);
+    // Exporters that send a span when it ends deliver the callee before the caller, so at this
+    // moment its parent is simply not here yet. It is taken as the top span, and the run ends on
+    // it; that early end is the known cost of reading a remote parent (see the PR discussion).
+    tb.roots.ingest([batch([span({ traceId: t, parent: callerId, name: "tool-service", kind: "workflow", flags: 0x300 })])]);
+    // When the caller's own span arrives it is the run's root, and the run ends on it.
+    tb.roots.ingest([batch([span({ traceId: t, spanId: callerId, name: "caller-agent", kind: "workflow" })])]);
+
+    expect(tb.roots.store.getRun(t)).toMatchObject({ status: "ok", root_span_id: callerId, root_name: "caller-agent", root_ended: 1 });
+    expect(runRoot(loadTrace(tb.roots.store, t).spans)?.id).toBe(callerId);
   });
 });

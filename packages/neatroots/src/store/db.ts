@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import { BlobStore } from "./blobs.js";
 import { sha256, newId } from "../util/ids.js";
 import { buildView, preview, type SpanView } from "../semantics/view.js";
-import { kvToPlain, type KeyValue, type OtlpResource, type OtlpScope, type OtlpSpan, type Plain, type ResourceSpansBatch } from "../otlp/types.js";
+import { hasRemoteParent, kvToPlain, type KeyValue, type OtlpResource, type OtlpScope, type OtlpSpan, type Plain, type ResourceSpansBatch } from "../otlp/types.js";
 import type {
   Annotation,
   DecisionRow,
@@ -559,6 +559,11 @@ export class Store {
     return row;
   }
 
+  /** Whether a span id is already stored for this trace. */
+  private spanStored(traceId: string, spanId: string): boolean {
+    return this.db.prepare("SELECT 1 FROM spans WHERE trace_id = ? AND span_id = ?").get(traceId, spanId) !== undefined;
+  }
+
   private updateRun(
     span: OtlpSpan,
     view: SpanView,
@@ -626,7 +631,14 @@ export class Store {
         p.reason = view.terminationReason;
       }
     }
-    if (!span.parentSpanId && !view.isMarker) {
+    // A span is the run's top when it has no parent, or when it declares a remote parent that never
+    // reached this trace (#157). A remote parent on its own isn't enough. With propagated context
+    // both processes export here, so the callee's top span carries a remote parent while the
+    // caller's parentless span sits in the same trace; taking the callee as the root ends the run on
+    // it while the caller is still open, which fires end-of-run work too early. A run that already
+    // has a root keeps it: only a parentless span can take that place.
+    const isTop = !span.parentSpanId || (!run.root_span_id && hasRemoteParent(span) && !this.spanStored(span.traceId, span.parentSpanId));
+    if (isTop && !view.isMarker) {
       sets.push("root_span_id = @root", "root_name = @rootName", "input_preview = @inp", "output_preview = @out");
       p.root = span.spanId;
       p.rootName = span.name;
@@ -646,7 +658,7 @@ export class Store {
         if (!run.root_ended) flags.rootEnded = true;
       }
     }
-    if (view.sessionId && (!run.session_id || !span.parentSpanId)) {
+    if (view.sessionId && (!run.session_id || isTop)) {
       sets.push("session_id = @session");
       p.session = view.sessionId;
     }
