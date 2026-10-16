@@ -6,7 +6,7 @@ import { listCloudProjects, listCloudTraces, NO_CLOUD_TOKEN } from "../ingest/im
 import { cloudImportAuth, cloudImportBase, ImportError, parseTraceFile } from "../ingest/importers/index.js";
 import { deleteCloudToken, getCloudToken, setCloudToken } from "../relay/keychain.js";
 import { buildChat } from "../semantics/chat-view.js";
-import { body, err } from "./util.js";
+import { body, clampInt, err } from "./util.js";
 import { runSummary } from "./api.js";
 
 // Run views (chat, conversation), search, imports, cloud import, replays and the in-app coding
@@ -63,7 +63,7 @@ export function mountExploreApi(app: Hono, roots: Roots): void {
 
   app.get("/api/search/runs", (c) => {
     const { text, filters } = parseSearch(c.req.query("q") ?? "");
-    const limit = Math.min(100, Number(c.req.query("limit") ?? 50));
+    const limit = clampInt(c.req.query("limit"), 50, 1, 100);
     const kind = filters.kind?.toUpperCase();
     const hits = text ? roots.store.searchSpans(text, 1000) : [];
     const byRun = new Map<string, { span_id: string; name: string; snippet: string; kind?: string }[]>();
@@ -236,7 +236,7 @@ export function mountExploreApi(app: Hono, roots: Roots): void {
   });
   app.get("/api/chat/sessions/:id", (c) => {
     const s = roots.chats.get(c.req.param("id"));
-    return s ? c.json({ session: s, events: roots.chats.events(s.id, Number(c.req.query("after") ?? 0)) }) : err(c, 404, "no such chat");
+    return s ? c.json({ session: s, events: roots.chats.events(s.id, clampInt(c.req.query("after"), 0, 0, Number.MAX_SAFE_INTEGER)) }) : err(c, 404, "no such chat");
   });
   app.patch("/api/chat/sessions/:id", async (c) => {
     const b = await body<{ allow_edits?: boolean; allow_commands?: boolean; title?: string }>(c);
