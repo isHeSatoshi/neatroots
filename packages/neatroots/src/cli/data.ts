@@ -20,7 +20,7 @@ const CLOUD: Pick<ImportSource, "id" | "label" | "description" | "fields"> = {
 const SOURCES = [CLOUD];
 
 function windowMs(v: string | undefined, fallbackDays: number): number {
-  if (!v) return Date.now() - fallbackDays * 86_400_000;
+  if (v === undefined) return Date.now() - fallbackDays * 86_400_000;
   const t = parseSince(v);
   if (t === undefined) throw new Error(`--since takes ${SINCE_FORMS}, not "${v}"`);
   return t;

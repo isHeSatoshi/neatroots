@@ -67,8 +67,8 @@ export function mountExploreApi(app: Hono, roots: Roots): void {
     const offset = clampInt(c.req.query("offset"), 0, 0, Number.MAX_SAFE_INTEGER);
     const kind = filters.kind?.toUpperCase();
     // A since: we can't read is refused rather than dropped, which would quietly search every run.
-    const since = filters.since ? parseSince(filters.since) : undefined;
-    if (filters.since && since === undefined) return err(c, 400, `since: takes ${SINCE_FORMS}, not "${filters.since}"`);
+    const since = filters.since !== undefined ? parseSince(filters.since) : undefined;
+    if (filters.since !== undefined && since === undefined) return err(c, 400, `since: takes ${SINCE_FORMS}, not "${filters.since}"`);
     // The store matches every filter and the text in SQL, so the total and the page cover all runs.
     const filter: RunFilter = {
       text: text || undefined,

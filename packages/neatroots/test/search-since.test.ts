@@ -27,7 +27,7 @@ describe("since values", () => {
   });
 
   it("refuses what it can't read instead of guessing a year", () => {
-    for (const v of ["30", "12", "7days", "1h30m", "yesterday", "2026-13-45"]) expect(parseSince(v, NOW), v).toBeUndefined();
+    for (const v of ["", "30", "12", "7days", "1h30m", "yesterday", "2026-13-45", `${"9".repeat(400)}m`]) expect(parseSince(v, NOW), v).toBeUndefined();
   });
 });
 
@@ -55,7 +55,7 @@ describe("search with since:", () => {
     expect(minutes.status).toBe(200);
     expect(minutes.body.runs!.map((r) => r.trace_id)).toEqual([recent]);
 
-    for (const q of ["since:30x", "since:30", "since:7days"]) {
+    for (const q of ["since:30x", "since:30", "since:7days", 'since:""', `since:${"9".repeat(400)}m`]) {
       const bad = await search(q);
       expect(bad.status, q).toBe(400);
       expect(bad.body.error, q).toMatch(/since: takes 30m, 24h, 7d, 2w or a date/);

@@ -10,7 +10,11 @@ export const SINCE_FORMS = "30m, 24h, 7d, 2w or a date such as 2026-10-01";
  */
 export function parseSince(v: string, now = Date.now()): number | undefined {
   const m = /^(\d+)\s*([mhdw])$/i.exec(v.trim());
-  if (m) return now - Number(m[1]) * UNIT_MS[m[2].toLowerCase() as keyof typeof UNIT_MS];
+  if (m) {
+    // Enough digits make the count Infinity, which would read as "every run".
+    const t = now - Number(m[1]) * UNIT_MS[m[2].toLowerCase() as keyof typeof UNIT_MS];
+    return Number.isFinite(t) ? t : undefined;
+  }
   if (!/^\d{4}-\d{2}/.test(v.trim())) return undefined;
   const t = Date.parse(v);
   return Number.isNaN(t) ? undefined : t;
