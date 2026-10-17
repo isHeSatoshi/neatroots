@@ -208,19 +208,61 @@ describe("a run whose top span has a remote parent (#157)", () => {
     expect(tb.roots.store.getRun(t)).toMatchObject({ root_name: "POST /chat", session_id: "sess-root" });
   });
 
-  it("hands the root back to the caller's span when the callee reached neatroots first", async () => {
+  it("reopens the run when the caller's own span arrives open after the callee ended it", async () => {
     const tb = await makeRoots({ noEngine: true });
     cleanup.push(tb.close);
     const t = hex(16);
     const callerId = hex(8);
-    // Exporters that send a span when it ends deliver the callee before the caller, so at this
-    // moment its parent is simply not here yet. It is taken as the top span, and the run ends on
-    // it; that early end is the known cost of reading a remote parent (see the PR discussion).
+    // Exporters that send a span when it ends (the OTel default) deliver the callee before the
+    // caller, so at this moment its parent is simply not here yet. It is taken as the top span and
+    // the run ends on it, which is the known cost of reading a remote parent (#157).
     tb.roots.ingest([batch([span({ traceId: t, parent: callerId, name: "tool-service", kind: "workflow", flags: 0x300 })])]);
-    // When the caller's own span arrives it is the run's root, and the run ends on it.
-    tb.roots.ingest([batch([span({ traceId: t, spanId: callerId, name: "caller-agent", kind: "workflow" })])]);
+    expect(tb.roots.store.getRun(t)).toMatchObject({ status: "ok", root_name: "tool-service", root_ended: 1 });
 
-    expect(tb.roots.store.getRun(t)).toMatchObject({ status: "ok", root_span_id: callerId, root_name: "caller-agent", root_ended: 1 });
+    // The caller's own span arrives still open. It is the real root, and the run is not over: end
+    // work ran on the callee's slice of the trace and has to be allowed to run on the full one.
+    const callerOpen = span({ traceId: t, spanId: callerId, name: "caller-agent", kind: "workflow", attrs: [s("neatlogs.workflow.input", '{"q":"hello"}')] });
+    const u = tb.roots.ingest([batch([{ ...callerOpen, endTimeUnixNano: "0" }])]);
+
+    expect(u[0]).toMatchObject({ rootEnded: false, rootHandedBack: true });
+    expect(tb.roots.store.getRun(t)).toMatchObject({
+      status: "running",
+      root_span_id: callerId,
+      root_name: "caller-agent",
+      root_ended: 0,
+    });
     expect(runRoot(loadTrace(tb.roots.store, t).spans)?.id).toBe(callerId);
+
+    // It ends when the caller's own span ends, and the end is reported again so end-of-run checks
+    // and forwarding see the full trace rather than the callee's part of it. The hand-back itself
+    // was reported on the update above; by now the root is already the caller's own span.
+    const u2 = tb.roots.ingest([batch([callerOpen])]);
+    expect(u2[0]).toMatchObject({ rootEnded: true, rootHandedBack: false });
+    expect(tb.roots.store.getRun(t)).toMatchObject({ status: "ok", root_span_id: callerId, root_name: "caller-agent", root_ended: 1 });
+  });
+
+  it("reports the end again when the caller's span arrives already ended", async () => {
+    const tb = await makeRoots({ noEngine: true });
+    cleanup.push(tb.close);
+    const t = hex(16);
+    const callerId = hex(8);
+    tb.roots.ingest([batch([span({ traceId: t, parent: callerId, name: "tool-service", kind: "workflow", flags: 0x300 })])]);
+    // No open phase this time: the caller's span was buffered and arrives with its own end.
+    const u = tb.roots.ingest([batch([span({ traceId: t, spanId: callerId, name: "caller-agent", kind: "workflow" })])]);
+
+    expect(u[0]).toMatchObject({ rootEnded: true, rootHandedBack: true });
+    expect(tb.roots.store.getRun(t)).toMatchObject({ status: "ok", root_span_id: callerId, root_name: "caller-agent", root_ended: 1 });
+  });
+
+  it("does not report a hand-back when the root already had no parent", async () => {
+    const tb = await makeRoots({ noEngine: true });
+    cleanup.push(tb.close);
+    const t = hex(16);
+    tb.roots.ingest([batch([span({ traceId: t, name: "caller-agent", kind: "workflow" })])]);
+    // A second parentless span in the same trace is not a hand-back: nothing was taken from a span
+    // that only qualified through its remote parent.
+    const u = tb.roots.ingest([batch([span({ traceId: t, name: "another-root", kind: "workflow" })])]);
+
+    expect(u[0]).toMatchObject({ rootEnded: false, rootHandedBack: false });
   });
 });

@@ -268,6 +268,8 @@ export interface TraceUpdate {
   spans: IngestedSpan[];
   runCreated: boolean;
   rootEnded: boolean;
+  /** A parentless span took the root back from one that only qualified through its remote parent (#157). */
+  rootHandedBack: boolean;
   completed: boolean;
 }
 
@@ -474,7 +476,7 @@ export class Store {
             .get(span.traceId, span.spanId) as AggregateSpan | undefined;
           let u = updates.get(span.traceId);
           if (!u) {
-            u = { traceId: span.traceId, spans: [], runCreated: false, rootEnded: false, completed: false };
+            u = { traceId: span.traceId, spans: [], runCreated: false, rootEnded: false, rootHandedBack: false, completed: false };
             updates.set(span.traceId, u);
           }
           const row = this.writeSpan(span, view, resourceId, scopeId, now);
@@ -482,6 +484,7 @@ export class Store {
           const runFlags = this.updateRun(span, view, row, resAttrs, now, previous);
           if (runFlags.created) u.runCreated = true;
           if (runFlags.rootEnded) u.rootEnded = true;
+          if (runFlags.rootHandedBack) u.rootHandedBack = true;
           if (runFlags.completed) u.completed = true;
         }
       }
@@ -564,6 +567,15 @@ export class Store {
     return this.db.prepare("SELECT 1 FROM spans WHERE trace_id = ? AND span_id = ?").get(traceId, spanId) !== undefined;
   }
 
+  /**
+   * Whether a stored span has a parent outside the trace, which means it only became the root
+   * through the remote-parent read (#157). A root without a parent id never qualifies.
+   */
+  private rootCameFromRemoteParent(traceId: string, spanId: string): boolean {
+    const row = this.db.prepare("SELECT parent_span_id FROM spans WHERE trace_id = ? AND span_id = ?").get(traceId, spanId) as { parent_span_id: string | null } | undefined;
+    return !!row?.parent_span_id;
+  }
+
   private updateRun(
     span: OtlpSpan,
     view: SpanView,
@@ -571,8 +583,8 @@ export class Store {
     resAttrs: Record<string, Plain>,
     now: number,
     previous: AggregateSpan | undefined,
-  ): { created: boolean; rootEnded: boolean; completed: boolean } {
-    const flags = { created: false, rootEnded: false, completed: false };
+  ): { created: boolean; rootEnded: boolean; rootHandedBack: boolean; completed: boolean } {
+    const flags = { created: false, rootEnded: false, rootHandedBack: false, completed: false };
     let run = this.getRun(span.traceId);
     if (!run) {
       const project = String(resAttrs["service.name"] ?? view.workflow ?? "unknown");
@@ -638,6 +650,12 @@ export class Store {
     // it while the caller is still open, which fires end-of-run work too early. A run that already
     // has a root keeps it: only a parentless span can take that place.
     const isTop = !span.parentSpanId || (!run.root_span_id && hasRemoteParent(span) && !this.spanStored(span.traceId, span.parentSpanId));
+    // Exporters that send a span when it ends (the OTel default) deliver the callee before the
+    // caller, so the run ended on a span whose parent simply had not arrived yet. The caller's own
+    // span is the real root, and taking it back has to undo that end: while the caller is open the
+    // run is running again, and once the caller ends the run ends on the full trace rather than on
+    // the callee's slice of it.
+    const handedBack = !span.parentSpanId && !!run.root_span_id && this.rootCameFromRemoteParent(span.traceId, run.root_span_id);
     if (isTop && !view.isMarker) {
       sets.push("root_span_id = @root", "root_name = @rootName", "input_preview = @inp", "output_preview = @out");
       p.root = span.spanId;
@@ -655,9 +673,14 @@ export class Store {
           sets.push("status = @status");
           p.status = span.status.code === 2 ? "error" : "ok";
         }
-        if (!run.root_ended) flags.rootEnded = true;
+        // A hand-back reports the end again even though the run already had one: end-of-run checks
+        // and forwarding ran on the callee's spans, and they have to run on the full trace now.
+        if (handedBack || !run.root_ended) flags.rootEnded = true;
+      } else if (handedBack && !view.interrupted && run.status !== "interrupted") {
+        sets.push("root_ended = 0", "ended_ms = NULL", "status = 'running'");
       }
     }
+    if (handedBack) flags.rootHandedBack = true;
     if (view.sessionId && (!run.session_id || isTop)) {
       sets.push("session_id = @session");
       p.session = view.sessionId;
