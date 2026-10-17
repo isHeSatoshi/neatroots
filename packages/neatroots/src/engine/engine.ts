@@ -1248,8 +1248,13 @@ ${library}`;
           }
         } catch (err) {
           if (err instanceof DecisionUnavailableError) throw err;
+          // A cancellation that escapes the backend is not a model error: the question was never asked.
+          if (opts.signal?.aborted || (err instanceof Error && err.name === "AbortError")) {
+            aborted = true;
+            break;
+          }
           // A 5xx, 429 or 401 from the judge is not a "no": the question was never answered.
-          lastError = (err as Error).message;
+          lastError = (err instanceof Error ? err.message : String(err)) || "the model call failed";
         }
       }
       if (judged) checked++;

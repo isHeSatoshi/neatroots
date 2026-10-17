@@ -140,4 +140,34 @@ rule:
     expect(r.skipped).toMatchObject({ aborted: 1 });
     expect(r.reasons[0].detail).toMatch(/ran out of time/);
   });
+
+  it("reports a cancellation that escapes the judge as aborted, not as a model error", async () => {
+    const { tb } = await setup();
+    llmRun(tb);
+    const ac = new AbortController();
+    (tb.roots.engine as unknown as { decisions: { decide: () => Promise<never> } }).decisions.decide = () => {
+      ac.abort(); // the caller cancelled while the judge was working
+      return Promise.reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" }));
+    };
+    const r = await tb.roots.engine!.previewCheck(llmOnlyQuestion, { limit: 50, signal: ac.signal });
+    expect(r.checked).toBe(0);
+    expect(r.skipped).toMatchObject({ aborted: 1 });
+    expect(r.reasons[0].reason).toBe("aborted");
+  });
+
+  it("reports a judge that rejects with something that isn't an Error as a model error", async () => {
+    const { tb } = await setup();
+    llmRun(tb);
+    const engine = tb.roots.engine as unknown as { decisions: { decide: () => Promise<never> } };
+    engine.decisions.decide = () => Promise.reject("boom"); // a string, not an Error
+    const r = await tb.roots.engine!.previewCheck(llmOnlyQuestion, { limit: 50 });
+    expect(r.checked).toBe(0);
+    expect(r.skipped).toMatchObject({ model_error: 1 });
+    expect(r.reasons[0]).toMatchObject({ reason: "model_error", detail: "boom" });
+    // An empty rejection still names the reason instead of reading as "the evidence matched nothing".
+    engine.decisions.decide = () => Promise.reject("");
+    const r2 = await tb.roots.engine!.previewCheck(llmOnlyQuestion, { limit: 50 });
+    expect(r2.skipped).toMatchObject({ model_error: 1 });
+    expect(r2.reasons[0].detail).toBe("the model call failed");
+  });
 });
