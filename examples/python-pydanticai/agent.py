@@ -23,6 +23,7 @@ uses OPENAI_API_KEY. Another neatroots? Set OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, 
 import json
 import os
 import sys
+from urllib.parse import urlparse
 
 if os.environ.get("REAL_LLM") != "1":  # neatroots' mock LLM (neatroots mock-llm); REAL_LLM=1 uses your own key
     os.environ.setdefault("OPENAI_BASE_URL", os.environ.get("MOCK_LLM_URL", "http://127.0.0.1:4110/v1"))
@@ -37,7 +38,12 @@ if os.environ.get("OTLP_PROTOCOL") == "grpc":
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") or os.environ.get("NEATROOTS_GRPC") or "localhost:4317"
-    exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
+    # neatroots' gRPC server is on this machine and plaintext. Anywhere else the exporter decides,
+    # so a bare host:port and https:// get TLS and authorization headers
+    # (OTEL_EXPORTER_OTLP_TRACES_HEADERS) do not cross the network in the clear by default, while
+    # an http:// endpoint still means plaintext was asked for by name.
+    local = urlparse(endpoint if "://" in endpoint else "//" + endpoint).hostname in ("localhost", "127.0.0.1", "::1")
+    exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True if local else None)
 else:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
