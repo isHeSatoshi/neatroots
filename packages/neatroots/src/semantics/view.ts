@@ -299,6 +299,7 @@ function exceptionMessage(span: OtlpSpan): string | undefined {
   return undefined;
 }
 
+/** One span's semantics, read from whichever public attribute convention sent it. */
 export function buildView(span: OtlpSpan, resourceAttrs: KeyValue[]): SpanView {
   const attrs = kvToPlain(span.attributes);
   const res = kvToPlain(resourceAttrs);
