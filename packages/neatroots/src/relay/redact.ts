@@ -1,4 +1,6 @@
 import type { AnyValue, KeyValue, ResourceSpansBatch } from "../otlp/types.js";
+import { regexProblem } from "../util/regex.js";
+import { log } from "../util/log.js";
 
 export interface RedactionRule {
   kind: string;
@@ -39,11 +41,13 @@ export const CREDENTIAL_KINDS = ["private_key", "api_key", "bearer_token", "jwt"
 export function compileRules(userPatterns: string[]): RedactionRule[] {
   const user: RedactionRule[] = [];
   for (const p of userPatterns) {
-    try {
-      user.push({ kind: "custom", re: new RegExp(p, "g") });
-    } catch {
-      /* ignore invalid user patterns; they are validated when saved */
+    // Validated when saved in the app; one written into config.yaml by hand is checked here.
+    const problem = regexProblem(p, "g");
+    if (problem) {
+      log.warn(`redaction pattern ${JSON.stringify(p)} skipped: ${problem}`);
+      continue;
     }
+    user.push({ kind: "custom", re: new RegExp(p, "g") });
   }
   return [...BUILTIN_RULES, ...user];
 }

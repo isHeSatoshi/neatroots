@@ -7,6 +7,11 @@ public API (`https://app.neatlogs.com/api/v1/public`), which takes a different c
 service-account token (`nlsa_…`) sent as `Authorization: Bearer`, with `x-project-id` naming the
 project.
 
+neatroots sends your Neatlogs key (and, for imports, your service-account token) only to an https
+`*.neatlogs.com` address, or to localhost for testing. To use another https address, such as a
+self-hosted Neatlogs, set `cloud.endpoint` and `cloud.trustEndpoint: true` in `config.yaml`; plain
+http to another machine is always refused.
+
 ## Compatibility
 
 - **Ingest.** neatroots accepts exactly what the SDKs send to the cloud: `POST /v1/traces` (protobuf or
@@ -42,6 +47,10 @@ SDK's own `mask` and PII options still apply first, in your process. Every send 
 Neatlogs Cloud).
 
 The project API key is stored in the macOS Keychain (`neatroots cloud login`), never in the database.
+
+Requests that carry the project API key or the service-account token don't follow HTTP redirects:
+a redirect is logged as a failed send or import, so the key never reaches another host. If your
+endpoint moved, set it to the final URL.
 
 ## Importing
 

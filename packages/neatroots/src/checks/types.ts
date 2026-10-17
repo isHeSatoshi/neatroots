@@ -1,13 +1,5 @@
 import { z } from "zod";
-
-function compiles(pattern: string, flags: string): boolean {
-  try {
-    new RegExp(pattern, flags);
-    return true;
-  } catch {
-    return false;
-  }
-}
+import { regexProblem } from "../util/regex.js";
 
 /** Which spans a check looks at. Every field is optional; all given fields must match. */
 export const SpanSelector = z
@@ -111,7 +103,10 @@ export const RuleSpec = z.discriminatedUnion("type", [
       flags: z.string().optional(),
     })
     .strict()
-    .refine((r) => compiles(r.pattern, r.flags ?? "i"), { message: "pattern is not a valid regular expression", path: ["pattern"] }),
+    .superRefine((r, ctx) => {
+      const problem = regexProblem(r.pattern, r.flags ?? "i");
+      if (problem) ctx.addIssue({ code: "custom", path: ["pattern"], message: problem });
+    }),
   z
     .object({
       type: z.literal("unrecovered_error"),

@@ -60,7 +60,8 @@ export class SteeringHub {
   push(input: { traceId: string; findingId: string | null; kind: Note["kind"]; text: string; checks?: Note["checks"] }): Note | undefined {
     const run = this.roots.store.getRun(input.traceId);
     if (!run || run.status !== "running") return undefined;
-    if (input.kind !== "halt" && this.mode(run.project) === "off") return undefined;
+    // Off means nothing is sent (docs/steering.md), a halt from your own rule included.
+    if (this.mode(run.project) === "off") return undefined;
     const limit = this.roots.config.steering.maxNotesPerRun;
     if (input.kind !== "halt" && this.deliveredCount(input.traceId) + this.pendingCount(input.traceId) >= limit) return undefined;
     const note = this.roots.store.insertNote({
@@ -119,10 +120,9 @@ export class SteeringHub {
   claim(traceId: string, spanId?: string | null): Note | undefined {
     let pending = this.roots.store.notesForTrace(traceId, "pending");
     if (!pending.length) return undefined;
-    // If steering was turned off after a note was queued, don't deliver it.
-    // A halt note still wins (it matches push()'s halt exception).
+    // Steering turned off after a note was queued: nothing is delivered, a halt included.
     const run = this.roots.store.getRun(traceId);
-    if (this.mode(run?.project) === "off") pending = pending.filter((n) => n.kind === "halt");
+    if (this.mode(run?.project) === "off") pending = [];
     if (!pending.length) return undefined;
     const rank = (n: Note) => (n.kind === "halt" ? 0 : n.kind === "llm" ? 1 : 2);
     const pick = [...pending].sort((a, b) => rank(a) - rank(b) || a.created_ms - b.created_ms)[0];

@@ -453,7 +453,7 @@ export class Engine {
       if (rule.rule.type === "run_end" && !atEnd) continue;
       let hit: RuleHit | null;
       try {
-        hit = evaluateRule(rule, snap, atEnd, fresh);
+        hit = evaluateRule(rule, snap, atEnd, fresh, lc.source !== "library");
       } catch (err) {
         log.warn(`rule ${rule.id} failed: ${(err as Error).message}`);
         continue;
@@ -1220,8 +1220,9 @@ ${library}`;
       }
       const snap = loadTrace(this.roots.store, r.trace_id);
       if (isRule(check)) {
-        // A rule is deterministic: it ran on this run either way.
-        const hit = evaluateRule(check, snap, true);
+        // A rule is deterministic: it ran on this run either way. A previewed check is a draft
+        // someone (or a coding agent) wrote, so its pattern is timed.
+        const hit = evaluateRule(check, snap, true, undefined, true);
         checked++;
         if (hit) hits.push({ trace_id: r.trace_id, probability: null, evidence_span_ids: hit.evidenceSpanIds, root_name: r.root_name });
         continue;

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { RootsConfig } from "../config.js";
-import { LlmClient, LlmUnavailableError, type TokenLogprob } from "./llm.js";
+import { isLocalUrl, LlmClient, LlmUnavailableError, type TokenLogprob } from "./llm.js";
 import { log } from "../util/log.js";
 
 /**
@@ -98,6 +98,8 @@ export interface JevEndpoint {
   timeoutSec: number;
   /** Cloud endpoints are not probed with a test request on every check. */
   probe: boolean;
+  /** Applied to the state and question text when the server isn't on this machine. */
+  redact?: () => (s: string) => string;
 }
 
 /** Any server speaking the Jev typed-decision API: Laya (local), Clef, Jev, Jev cloud. */
@@ -154,14 +156,16 @@ export class JevBackend implements DecisionBackend {
   }
 
   async decide(state: string, questions: DecisionQuestion[]): Promise<DecisionResult> {
+    const redact = this.ep.redact && !isLocalUrl(this.ep.baseUrl()) ? this.ep.redact() : (s: string) => s;
     const body = {
       model: this.ep.model(),
-      state,
+      state: redact(state),
       questions: Object.fromEntries(
         questions.map((q) => {
-          if (q.type === "yes_no") return [q.name, { type: "noul", instructions: q.ask }];
-          if (q.type === "choice") return [q.name, { type: "choice", instructions: q.ask, criteria: q.options ?? {} }];
-          return [q.name, { type: "score", instructions: q.ask, criteria: q.levels ?? ["none", "low", "medium", "high", "critical"] }];
+          const ask = redact(q.ask);
+          if (q.type === "yes_no") return [q.name, { type: "noul", instructions: ask }];
+          if (q.type === "choice") return [q.name, { type: "choice", instructions: ask, criteria: q.options ?? {} }];
+          return [q.name, { type: "score", instructions: ask, criteria: q.levels ?? ["none", "low", "medium", "high", "critical"] }];
         }),
       ),
     };
@@ -312,9 +316,13 @@ export class LlmDecisionBackend implements DecisionBackend {
         );
         model = r.model;
         const parsed = (r.json as { answer?: string; confidence?: number } | undefined) ?? {};
-        const chosen = String(parsed.answer ?? "");
+        const said = String(parsed.answer ?? "").trim().toLowerCase();
+        const chosen = labels.find((l) => l.toLowerCase() === said) ?? "";
         const stated = typeof parsed.confidence === "number" && parsed.confidence >= 0 && parsed.confidence <= 1 ? parsed.confidence : undefined;
         const conf = stated ?? 0.85;
+        // No readable answer (prose instead of JSON): the check fails rather than reading as 50/50,
+        // which would count as "yes".
+        if (!labels.includes(chosen)) throw new Error(`the model's answer couldn't be read (${JSON.stringify(String(r.text ?? "").slice(0, 80))})`);
         const dist =
           (r.logprobs && distributionFromLogprobs(labels, r.logprobs, chosen)) ??
           // No logprobs: the stated confidence, or a fixed one, becomes the probability of the chosen label.
@@ -391,7 +399,9 @@ export class DecisionModel {
       timeoutSec: cfg.timeoutSec,
       probe: true,
     });
-    this.jev = new JevBackend({ name: "jev", baseUrl: () => cfg.baseUrl, model: () => cfg.model, apiKey: async () => cfg.apiKey, timeoutSec: cfg.timeoutSec, probe: true });
+    // Text for a Jev server off this machine gets the hosted LLM's redaction (llm.external.redact).
+    const redact = () => llm.redactRemote();
+    this.jev = new JevBackend({ name: "jev", baseUrl: () => cfg.baseUrl, model: () => cfg.model, apiKey: async () => cfg.apiKey, timeoutSec: cfg.timeoutSec, probe: true, redact });
     this.jevCloud = new JevBackend({
       name: "jev-cloud",
       baseUrl: () => cfg.jevCloud.baseUrl,
@@ -399,6 +409,7 @@ export class DecisionModel {
       apiKey: secrets.jevCloud,
       timeoutSec: Math.max(cfg.timeoutSec, 20),
       probe: false,
+      redact,
     });
     this.llmBackend = new LlmDecisionBackend(llm);
   }
