@@ -87,6 +87,8 @@ interface LiveRun {
   ruleGrace: Map<string, boolean>;
   ended: boolean;
   endHandled: boolean;
+  /** Bumped when a hand-back invalidates the end pass in flight; that pass stops at its next await. */
+  endPass: number;
   doctor: boolean;
   /** Resuming after a restart: answers already stored are not asked again. */
   answered?: { traceChecks: Set<string>; toolSpans: Set<string> };
@@ -264,6 +266,7 @@ export class Engine {
       ruleGrace: new Map(),
       ended: false,
       endHandled: false,
+      endPass: 0,
       doctor: row.doctor === 1,
     };
     this.live.set(traceId, r);
@@ -285,7 +288,13 @@ export class Engine {
     // span together. This runs before the spans are processed, so a rule the caller's span raises
     // sees the reopened run and can still steer.
     const reopened = u.rootHandedBack && !u.completed && this.roots.store.getRun(u.traceId)?.status === "running";
-    if (u.rootHandedBack) run.endHandled = false;
+    if (u.rootHandedBack) {
+      run.endHandled = false;
+      // An end pass already running was for the callee's slice of the trace. The root has moved, so
+      // that pass stops at its next await instead of writing end-of-run state the next pass would
+      // then skip (a stored summary, say).
+      run.endPass++;
+    }
     if (reopened) {
       run.ended = false;
       clearTimeout(run.endTimer);
@@ -1028,6 +1037,11 @@ ${library}`;
   private async handleEnd(run: LiveRun): Promise<void> {
     if (run.endHandled) return;
     run.endHandled = true;
+    // A hand-back bumps endPass while this pass is awaiting something: the pass was for the
+    // callee's slice of the trace, so it stops rather than writing end-of-run state the next pass
+    // would then skip.
+    const pass = run.endPass;
+    const stale = () => run.endPass !== pass;
     // Notes the agent never picked up can no longer help this run.
     for (const n of this.roots.store.notesForTrace(run.traceId, "pending")) {
       this.roots.store.updateNote(n.id, { status: "expired" });
@@ -1037,6 +1051,7 @@ ${library}`;
     let snap = loadTrace(this.roots.store, run.traceId);
     if (!run.plan) this.ensurePlan(run, snap);
     if (run.planning) await run.planning;
+    if (stale()) return;
     snap = loadTrace(this.roots.store, run.traceId);
     this.applyRules(run, snap, true);
     // Final pass: end-only questions, and live questions with evidence they have not seen.
@@ -1056,12 +1071,15 @@ ${library}`;
         await this.askTrace(run, check, params, snap);
       }
     }
+    if (stale()) return;
     snap = loadTrace(this.roots.store, run.traceId);
     const findings = this.roots.store.findingsForTrace(run.traceId).filter((f) => f.status !== "failed" && f.status !== "dismissed");
+    if (stale()) return;
     // A failed run with no finding still gets triaged as a whole.
     if (snap.run && (snap.run.status === "error" || snap.run.interrupted) && !findings.some((f) => f.check_id === "run-failed")) {
       await this.triageRun(run, snap);
     }
+    if (stale()) return;
     for (const work of run.deferred.splice(0)) await work();
     await this.summarize(run, snap);
     this.scheduleLiveRelease(run);

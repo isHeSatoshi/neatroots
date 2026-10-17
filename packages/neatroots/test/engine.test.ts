@@ -300,6 +300,56 @@ rule:
     const note = tb.roots.steering.claim(t, null);
     expect(note?.text).toContain("The caller hit a problem");
   });
+
+  it("stops an end pass the hand-back invalidated before it stores a summary", async () => {
+    const { tb } = await setup();
+    // An end-only question, so the end pass parks on the judge and can be caught mid-flight.
+    const q = checkFromInput(`
+id: end-question
+kind: yes_no
+scope: trace
+when: end
+title: Did the run finish cleanly?
+ask: Did the agent finish its work without leaving anything half-done?
+flag_at: 0.9
+evidence: { spans: { type: [workflow] } }
+`).check;
+    if (!q) throw new Error("question did not parse");
+    tb.roots.checks.save(q, "user");
+    const engine = tb.roots.engine as unknown as { decisions: { decide: (...a: unknown[]) => Promise<unknown> } };
+    const real = engine.decisions.decide.bind(engine.decisions);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    engine.decisions.decide = async (...args: unknown[]) => {
+      await gate;
+      return real(...args);
+    };
+    // Availability is a network probe and can flicker under load; this test is about the staleness
+    // guard, so pin it and exercise the summarize path itself.
+    (tb.roots.llm as unknown as { isAvailable: () => Promise<boolean> }).isAvailable = async () => true;
+    const t = hex(16);
+    const callerId = hex(8);
+    // The callee ends first: the run ends on it and its end pass starts, parking on the judge.
+    tb.roots.ingest([batch([span({ traceId: t, parent: callerId, name: "tool-service", kind: "workflow", flags: 0x300 })])]);
+    await until(() => tb.roots.store.getRun(t)?.root_ended === 1);
+    await new Promise((r) => setTimeout(r, 800)); // the 400 ms end pass has started and parked
+    expect(tb.roots.store.getSummary(t)).toBeUndefined(); // parked: it cannot have finished
+
+    // The caller's own span arrives open: the run is running again and that pass is for a stale root.
+    const caller = span({ traceId: t, spanId: callerId, name: "caller-agent", kind: "workflow" });
+    tb.roots.ingest([batch([{ ...caller, endTimeUnixNano: "0" }])]);
+    release();
+    await new Promise((r) => setTimeout(r, 800)); // the stale pass resumes and finishes
+
+    // It must not have summarized the callee's slice of the trace, or the real end pass below
+    // would skip the summary entirely (summarize leaves an existing one alone).
+    expect(tb.roots.store.getSummary(t)).toBeUndefined();
+    expect(tb.roots.store.getRun(t)).toMatchObject({ status: "running", root_ended: 0 });
+
+    // The real end pass, on the full trace, still stores one.
+    tb.roots.ingest([batch([caller])]);
+    await until(() => tb.roots.store.getSummary(t), 10_000);
+  });
 });
 
 describe("planning", () => {  it("makes one plan per workflow when runs start together, and always includes baseline questions", async () => {
