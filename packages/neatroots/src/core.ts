@@ -43,6 +43,12 @@ export class Roots {
   private sweeper?: NodeJS.Timeout;
   /** When a coding agent last called neatroots over MCP. */
   mcpSeenMs: number | null = null;
+  /**
+   * When a steering hook last asked neatroots for work, and for which project. The SSE subscriber
+   * count only tells you about clients that stream (the Python hook), so a TypeScript hook that is
+   * polling happily reads as zero connections without this.
+   */
+  steerSeen: { at: number; project: string | null } | null = null;
   /** The run and span the app has in focus, for the MCP get_current_run tool. */
   focus: { trace_id: string; span_id: string | null; at: number } | null = null;
   /** Cloud pushes a coding agent asked for, waiting for the user to confirm in the app. */
