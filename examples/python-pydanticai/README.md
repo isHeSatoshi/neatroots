@@ -14,7 +14,9 @@ uv run agent.py
 ```
 
 `uv run` installs the dependencies listed at the top of agent.py. Set REAL_LLM=1 to use a real model
-instead of the mock.
+instead of the mock. The script declares Python 3.11+ (pydantic-ai 2.x needs it), so on a box whose
+system python is older, `uv run` fetches a suitable interpreter itself; to pin one, pass
+`uv run --python 3.12 agent.py`.
 
 What lands in neatroots:
 

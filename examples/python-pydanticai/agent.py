@@ -1,5 +1,5 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"   # pydantic-ai 2.x needs 3.11+; uv downloads one if the system python is older
 # dependencies = [
 #   "pydantic-ai>=2.57,<3",
 #   "opentelemetry-sdk>=1.27",
