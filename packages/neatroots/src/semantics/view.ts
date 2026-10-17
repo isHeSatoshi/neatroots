@@ -314,10 +314,12 @@ export function buildView(span: OtlpSpan, resourceAttrs: KeyValue[]): SpanView {
   view.agentName = str(first(attrs, ["neatlogs.agent.name", "agent.name", "gen_ai.agent.name"]));
   view.model = str(first(attrs, ["neatlogs.llm.model_name", "gen_ai.response.model", "gen_ai.request.model", "llm.model_name", "ai.response.model", "ai.model.id", "neatlogs.embedding.model_name"]));
   view.provider = str(first(attrs, ["neatlogs.llm.provider", "neatlogs.provider", "gen_ai.system", "gen_ai.provider.name", "llm.provider", "ai.model.provider"]));
-  view.promptTokens = int(first(attrs, ["neatlogs.llm.token_count.prompt", "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens", "gen_ai.aggregated_usage.input_tokens", "llm.token_count.prompt", "ai.usage.promptTokens", "ai.usage.inputTokens"]));
-  view.completionTokens = int(first(attrs, ["neatlogs.llm.token_count.completion", "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens", "gen_ai.aggregated_usage.output_tokens", "llm.token_count.completion", "ai.usage.completionTokens", "ai.usage.outputTokens"]));
+  // `gen_ai.aggregated_usage.*` is an agent span's sum over its calls, so it goes last in each
+  // list: a span that also carries a per-call count keeps reading that one.
+  view.promptTokens = int(first(attrs, ["neatlogs.llm.token_count.prompt", "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens", "llm.token_count.prompt", "ai.usage.promptTokens", "ai.usage.inputTokens", "gen_ai.aggregated_usage.input_tokens"]));
+  view.completionTokens = int(first(attrs, ["neatlogs.llm.token_count.completion", "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens", "llm.token_count.completion", "ai.usage.completionTokens", "ai.usage.outputTokens", "gen_ai.aggregated_usage.output_tokens"]));
   view.totalTokens =
-    int(first(attrs, ["neatlogs.llm.token_count.total", "gen_ai.usage.total_tokens", "gen_ai.aggregated_usage.total_tokens", "llm.token_count.total"])) ??
+    int(first(attrs, ["neatlogs.llm.token_count.total", "gen_ai.usage.total_tokens", "llm.token_count.total", "gen_ai.aggregated_usage.total_tokens"])) ??
     (view.promptTokens !== undefined || view.completionTokens !== undefined
       ? (view.promptTokens ?? 0) + (view.completionTokens ?? 0)
       : undefined);

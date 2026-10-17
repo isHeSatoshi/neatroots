@@ -64,6 +64,16 @@ describe("the attributes pydantic-ai's GenAI spans carry", () => {
     expect(v.totalTokens).toBe(100);
   });
 
+  it("keeps a per-call count when a span carries both forms", () => {
+    // A span can have the agent's aggregate and one call's own count; the call's is the specific
+    // one, so the aggregate stays the fallback.
+    const sp = agentSpan(hex(16), [s("llm.token_count.prompt", 12), s("llm.token_count.completion", 3)]);
+    const v = buildView(sp, []);
+    expect(v.promptTokens).toBe(12);
+    expect(v.completionTokens).toBe(3);
+    expect(v.totalTokens).toBe(15);
+  });
+
   it("lists tools that were offered but never called", () => {
     const v = buildView(chatSpan(hex(16), hex(8)), []);
     expect(v.kind).toBe("LLM");
