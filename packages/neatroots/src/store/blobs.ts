@@ -21,8 +21,9 @@ export function missingPayload(ref: { sha: string; len: number }): string {
 }
 
 export class BlobStore {
-  constructor(private readonly dir: string) {
-    fs.mkdirSync(dir, { recursive: true });
+  /** `create: false` reads an existing payload tree without creating one, for a read-only verify. */
+  constructor(private readonly dir: string, opts: { create?: boolean } = {}) {
+    if (opts.create !== false) fs.mkdirSync(dir, { recursive: true });
   }
 
   private file(sha: string): string {
@@ -47,9 +48,21 @@ export class BlobStore {
     }
   }
 
-  /** Whether this payload is on disk. `get` cannot tell an empty file from a missing one. */
+  /**
+   * Whether this payload reads back as content. `get` cannot tell an empty file from a missing one,
+   * and a directory in the payload's place, or a file this process cannot read, is missing to both:
+   * a presence check that says otherwise makes `Store.verify()` report a store whole when its reads
+   * fall back to the missing-payload notice.
+   */
   has(sha: string): boolean {
-    return fs.existsSync(this.file(sha));
+    const f = this.file(sha);
+    try {
+      if (!fs.statSync(f).isFile()) return false;
+      fs.accessSync(f, fs.constants.R_OK);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Every payload file on disk, as shas. Used to find files nothing references. */
@@ -59,7 +72,7 @@ export class BlobStore {
     for (const sub of fs.readdirSync(this.dir)) {
       const p = path.join(this.dir, sub);
       if (!fs.statSync(p).isDirectory()) continue;
-      for (const f of fs.readdirSync(p)) out.push(sub + f);
+      for (const f of fs.readdirSync(p)) if (fs.statSync(path.join(p, f)).isFile()) out.push(sub + f);
     }
     return out;
   }

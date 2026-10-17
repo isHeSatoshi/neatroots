@@ -398,6 +398,40 @@ export interface StoreVerify {
   present_bytes: number;
 }
 
+/** One value from the meta table, or undefined when it isn't there. */
+function metaValue(db: Database.Database, key: string): string | undefined {
+  return (db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined)?.value;
+}
+
+/**
+ * The report `Store.verify` returns, read from any handle: the one an open store holds, or a
+ * read-only one. Reads only, so it is safe on a store the caller must not change.
+ */
+function verifyStore(db: Database.Database, file: string, dir: string, blobs: BlobStore): StoreVerify {
+  const rows = db.prepare("PRAGMA quick_check").all() as Record<string, string>[];
+  const quick = Object.values(rows[0] ?? {})[0] ?? "unknown";
+  const referenced = new Set(
+    (db.prepare("SELECT DISTINCT j.value AS sha FROM spans, json_each(CASE WHEN json_valid(spans.blobs) THEN spans.blobs ELSE '[]' END) AS j WHERE spans.blobs IS NOT NULL").all() as { sha: string }[]).map((r) => r.sha),
+  );
+  const present = blobs.shas();
+  const missing = [...referenced].filter((sha) => !blobs.has(sha));
+  const n = (sql: string) => (db.prepare(sql).get() as { n: number }).n;
+  return {
+    file,
+    blobs_dir: path.join(dir, "blobs"),
+    quick_check: quick,
+    schema_version: metaValue(db, "schema_version") ?? null,
+    runs: n("SELECT COUNT(*) AS n FROM runs"),
+    spans: n("SELECT COUNT(*) AS n FROM spans"),
+    referenced: referenced.size,
+    present: present.length,
+    missing,
+    orphaned: present.filter((sha) => !referenced.has(sha)),
+    referenced_bytes: [...referenced].reduce((total, sha) => total + blobs.sizeOf(sha), 0),
+    present_bytes: blobs.size(),
+  };
+}
+
 /** Search covers this much of each input, output and error: the start and the end of long values. */
 export const SEARCH_LIMIT = { head: 150_000, tail: 50_000 };
 const SEARCH_INDEX_VERSION = 2;
@@ -449,11 +483,14 @@ export class Store {
     fs.mkdirSync(dir, { recursive: true });
     this.file = Store.dbFile(dir);
     this.db = new Database(this.file);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("synchronous = NORMAL");
-    this.db.pragma("busy_timeout = 5000");
-    this.db.exec(SCHEMA);
     try {
+      // Before the schema and the migrations: a store written by a newer build must be refused
+      // while nothing here has changed it yet.
+      this.checkVersion();
+      this.db.pragma("journal_mode = WAL");
+      this.db.pragma("synchronous = NORMAL");
+      this.db.pragma("busy_timeout = 5000");
+      this.db.exec(SCHEMA);
       this.migrate();
     } catch (err) {
       // A refused store must not keep its file locked on the way out.
@@ -464,6 +501,24 @@ export class Store {
     this.blobs = new BlobStore(path.join(dir, "blobs"));
     const row = this.db.prepare("SELECT MAX(seq) AS s FROM spans").get() as { s: number | null };
     this.seq = row.s ?? 0;
+  }
+
+  /**
+   * Refuses a store written by a newer neatroots, with a readable message instead of a failure on a
+   * column this build doesn't know. Reads meta only, so it runs before the schema and the
+   * migrations and leaves a store this build cannot read exactly as it found it.
+   */
+  private checkVersion(): void {
+    if (!this.db.prepare("SELECT 1 AS one FROM sqlite_master WHERE type = 'table' AND name = 'meta'").get()) return;
+    const found = this.getMeta("schema_version");
+    if (!found) return;
+    const version = Number(found);
+    if (Number.isFinite(version) && version > SCHEMA_VERSION) {
+      throw new Error(
+        `this store was written by a newer neatroots (store schema ${version}, this build reads ${SCHEMA_VERSION}). ` +
+          `Update neatroots, or start it against a different home directory.`,
+      );
+    }
   }
 
   close(): void {
@@ -479,16 +534,6 @@ export class Store {
     ensure("plans", "body", "TEXT");
     // Tool-result labels recorded before the rename to neatroots.
     this.db.prepare("UPDATE decisions SET check_id = 'neatroots.tool-result' WHERE check_id IN ('bolts.tool-result', 'neatbolt.tool-result')").run();
-    // A store written by a newer neatroots may have columns this binary doesn't know about, so
-    // refuse it here with a readable message instead of failing later on a missing column.
-    const found = this.getMeta("schema_version");
-    const version = found ? Number(found) : SCHEMA_VERSION;
-    if (Number.isFinite(version) && version > SCHEMA_VERSION) {
-      throw new Error(
-        `this store was written by a newer neatroots (store schema ${version}, this build reads ${SCHEMA_VERSION}). ` +
-          `Update neatroots, or start it against a different home directory.`,
-      );
-    }
     this.db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?)").run(String(SCHEMA_VERSION));
   }
 
@@ -1492,28 +1537,24 @@ export class Store {
    * files nothing references any more.
    */
   verify(): StoreVerify {
-    const rows = this.db.prepare("PRAGMA quick_check").all() as Record<string, string>[];
-    const quick = Object.values(rows[0] ?? {})[0] ?? "unknown";
-    const referenced = new Set(
-      (this.db.prepare("SELECT DISTINCT j.value AS sha FROM spans, json_each(CASE WHEN json_valid(spans.blobs) THEN spans.blobs ELSE '[]' END) AS j WHERE spans.blobs IS NOT NULL").all() as { sha: string }[]).map((r) => r.sha),
-    );
-    const present = this.blobs.shas();
-    const missing = [...referenced].filter((sha) => !this.blobs.has(sha));
-    const n = (sql: string) => (this.db.prepare(sql).get() as { n: number }).n;
-    return {
-      file: this.file,
-      blobs_dir: path.join(this.dir, "blobs"),
-      quick_check: quick,
-      schema_version: this.getMeta("schema_version") ?? null,
-      runs: n("SELECT COUNT(*) AS n FROM runs"),
-      spans: n("SELECT COUNT(*) AS n FROM spans"),
-      referenced: referenced.size,
-      present: present.length,
-      missing,
-      orphaned: present.filter((sha) => !referenced.has(sha)),
-      referenced_bytes: [...referenced].reduce((total, sha) => total + this.blobs.sizeOf(sha), 0),
-      present_bytes: this.blobs.size(),
-    };
+    return verifyStore(this.db, this.file, this.dir, this.blobs);
+  }
+
+  /**
+   * The same report read straight off disk, for `neatroots store verify`. Opens the database
+   * read-only, so nothing here creates a schema, migrates, or otherwise changes the store it
+   * inspects: a verify must not repair or replace what it was asked to check.
+   */
+  static verify(dir: string): StoreVerify {
+    const file = Store.dbFile(dir);
+    if (!fs.existsSync(file)) throw new Error(`no store database at ${file}`);
+    const db = new Database(file, { readonly: true });
+    try {
+      if (!db.prepare("SELECT 1 AS one FROM sqlite_master WHERE type = 'table' AND name = 'runs'").get()) throw new Error(`${file} is not a neatroots store (no runs table)`);
+      return verifyStore(db, file, dir, new BlobStore(path.join(dir, "blobs"), { create: false }));
+    } finally {
+      db.close();
+    }
   }
 
   stats(): { runs: number; spans: number; findings: number; bytes: number } {
@@ -1590,7 +1631,7 @@ export class Store {
   }
 
   getMeta(key: string): string | undefined {
-    return (this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined)?.value;
+    return metaValue(this.db, key);
   }
 
   setMeta(key: string, value: string): void {

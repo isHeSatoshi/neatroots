@@ -1,5 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { Store, SCHEMA_VERSION } from "../src/store/db.js";
 import { missingPayload } from "../src/store/blobs.js";
@@ -130,5 +133,102 @@ describe("the store says which schema it is", () => {
     closeTrackedStores();
     expect(() => new Store(path.join(home, "data"))).toThrow(/newer neatroots/);
     expect(() => new Store(path.join(home, "data"))).toThrow(new RegExp(`schema ${SCHEMA_VERSION + 1}`));
+  });
+
+  it("refuses it before it migrates anything", () => {
+    const { st, home } = store();
+    // A store a newer build wrote: newer version, and a shape this build would otherwise repair.
+    st.db.exec("ALTER TABLE plans DROP COLUMN body");
+    st.setMeta("schema_version", String(SCHEMA_VERSION + 1));
+    st.close();
+    closeTrackedStores();
+    const dir = path.join(home, "data");
+    expect(() => new Store(dir)).toThrow(/newer neatroots/);
+
+    const raw = new Database(Store.dbFile(dir), { readonly: true });
+    const cols = (raw.prepare("PRAGMA table_info(plans)").all() as { name: string }[]).map((c) => c.name);
+    raw.close();
+    expect(cols).not.toContain("body"); // the refusal came before the migration, so nothing was added
+  });
+});
+
+describe("a payload path that is not a readable file", () => {
+  it("counts as missing, not as present", () => {
+    const { st, home } = store();
+    const { t, sha, big } = runWithPayload(st);
+    fs.rmSync(blobFile(home, sha));
+    fs.mkdirSync(blobFile(home, sha), { recursive: true });
+    // The directory made the old presence check say the payload was there, while reads returned
+    // undefined, so verify called the store whole and a forward would have sent the notice as content.
+    const r = st.verify();
+    expect(r.missing).toEqual([sha]);
+    expect(r.present).toBe(0);
+    expect(r.orphaned).toEqual([]);
+    expect(payloadAttr(st, t)).toBe(missingPayload({ sha, len: big.length }));
+  });
+});
+
+describe("store verify leaves the store it inspects alone", () => {
+  it("reports a home with no database instead of creating one", () => {
+    const home = tmpHome();
+    homes.push(home);
+    const dir = path.join(home, "data");
+    expect(() => Store.verify(dir)).toThrow(/no store database/);
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it("reads an older store without migrating it", () => {
+    const { st, home } = store();
+    const { t, big } = runWithPayload(st);
+    st.db.exec("ALTER TABLE plans DROP COLUMN body"); // as a store from before that column looks
+    st.close();
+    closeTrackedStores();
+    const dir = path.join(home, "data");
+
+    const r = Store.verify(dir);
+    expect(r).toMatchObject({ runs: 1, referenced: 1, present: 1, missing: [], quick_check: "ok" });
+
+    const raw = new Database(Store.dbFile(dir), { readonly: true });
+    const cols = (raw.prepare("PRAGMA table_info(plans)").all() as { name: string }[]).map((c) => c.name);
+    raw.close();
+    expect(cols).not.toContain("body"); // verify read the store; it did not migrate it
+
+    const again = trackedStore(dir); // an ordinary open still migrates, so the check above means something
+    expect(again.verify()).toMatchObject({ runs: 1, missing: [] });
+    expect((again.db.prepare("PRAGMA table_info(plans)").all() as { name: string }[]).map((c) => c.name)).toContain("body");
+    expect(payloadAttr(again, t)).toBe(big);
+  });
+});
+
+const pkgRoot = fileURLToPath(new URL("..", import.meta.url));
+function verifyCli(home: string) {
+  return spawnSync(process.execPath, ["--import", "tsx", "src/cli.ts", "store", "verify", "--home", home], { cwd: pkgRoot, encoding: "utf8" });
+}
+
+describe("neatroots store verify", () => {
+  it("says there is no store, and creates none, when a home has an empty data folder", () => {
+    const home = tmpHome();
+    homes.push(home);
+    fs.mkdirSync(path.join(home, "data"), { recursive: true }); // a home that has not written a store yet
+    const r = verifyCli(home);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toMatch(/No store at .*neatroots creates it on first run\./);
+    expect(fs.readdirSync(path.join(home, "data"))).toEqual([]); // it did not create the store it was asked to check
+  });
+
+  it("prints both payload totals, and fails when a referenced payload is gone", () => {
+    const { st, home } = store();
+    const { sha } = runWithPayload(st);
+    st.close();
+    closeTrackedStores();
+    const ok = verifyCli(home);
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toMatch(/payloads: 1 referenced \(0\.1 MB\), 1 on disk \(0\.1 MB\)/);
+    expect(ok.stdout).toMatch(/✓ store reads whole/);
+
+    fs.rmSync(blobFile(home, sha));
+    const bad = verifyCli(home);
+    expect(bad.status).toBe(1);
+    expect(bad.stdout).toMatch(new RegExp(`missing payload ${sha}`));
   });
 });
