@@ -217,6 +217,36 @@ describe("a run that ended on a span whose parent had not arrived yet (#157)", (
     expect(tb.roots.store.getRun(t)).toMatchObject({ status: "ok", root_span_id: callerId, root_name: "caller-agent", root_ended: 1 });
     expect(tb.roots.store.getSpans(t, false)).toHaveLength(2);
   });
+
+  it("does not release a reopened run's live state when the first end's timer fires", async () => {
+    const { tb } = await setup();
+    const t = hex(16);
+    const callerId = hex(8);
+    const live = async () => (await tb.roots.engine!.status()).liveRuns;
+    tb.roots.ingest([batch([span({ traceId: t, parent: callerId, name: "tool-service", kind: "workflow", flags: 0x300 })])]);
+    await until(() => tb.roots.store.getRun(t)?.root_ended === 1);
+    await untilAsync(async () => (await live()) === 0);
+
+    // The caller's own span arrives open: the run is reopened, and the live state (plan, decided
+    // spans, budgets) has to survive. The first end scheduled a release for 60 s later; firing it
+    // must not take a run that is running again.
+    const caller = span({ traceId: t, spanId: callerId, name: "caller-agent", kind: "workflow" });
+    tb.roots.ingest([batch([{ ...caller, endTimeUnixNano: "0" }])]);
+    await untilAsync(async () => (await live()) === 1);
+
+    const engine = tb.roots.engine as unknown as { live: Map<string, unknown>; releaseLive: (r: unknown) => void };
+    const entry = engine.live.get(t);
+    expect(entry).toBeDefined();
+    engine.releaseLive(entry);
+    expect(engine.live.get(t)).toBe(entry);
+
+    // Once the caller's own span ends, the release the second end schedules takes it.
+    tb.roots.ingest([batch([caller])]);
+    await untilAsync(async () => {
+      engine.releaseLive(entry);
+      return engine.live.get(t) === undefined;
+    });
+  });
 });
 
 describe("planning", () => {  it("makes one plan per workflow when runs start together, and always includes baseline questions", async () => {

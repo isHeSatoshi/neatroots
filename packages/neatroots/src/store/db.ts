@@ -680,8 +680,11 @@ export class Store {
     // both processes export here, so the callee's top span carries a remote parent while the
     // caller's parentless span sits in the same trace; taking the callee as the root ends the run on
     // it while the caller is still open, which fires end-of-run work too early. A run that already
-    // has a root keeps it: only a parentless span can take that place.
-    const isTop = !span.parentSpanId || (!run.root_span_id && hasRemoteParent(span) && !this.spanStored(span.traceId, span.parentSpanId));
+    // has a root keeps it: only a parentless span can take that place, or the root itself being
+    // re-sent (a streaming exporter sends it open first, then with its end).
+    const isTop =
+      !span.parentSpanId ||
+      ((!run.root_span_id || run.root_span_id === span.spanId) && hasRemoteParent(span) && !this.spanStored(span.traceId, span.parentSpanId));
     // Exporters that send a span when it ends (the OTel default) deliver the callee before the
     // caller, so the run ended on a span whose parent simply had not arrived yet. The caller's own
     // span is the real root, and taking it back has to undo that end: while the caller is open the
@@ -689,6 +692,8 @@ export class Store {
     // the callee's slice of it.
     const handedBack = !span.parentSpanId && !!run.root_span_id && this.rootCameFromRemoteParent(span.traceId, run.root_span_id);
     if (isTop && !view.isMarker) {
+      // Reported only when the root is really replaced: a parentless marker doesn't take it.
+      if (handedBack) flags.rootHandedBack = true;
       sets.push("root_span_id = @root", "root_name = @rootName", "input_preview = @inp", "output_preview = @out");
       p.root = span.spanId;
       p.rootName = span.name;
@@ -712,7 +717,6 @@ export class Store {
         sets.push("root_ended = 0", "ended_ms = NULL", "status = 'running'");
       }
     }
-    if (handedBack) flags.rootHandedBack = true;
     if (view.sessionId && (!run.session_id || isTop)) {
       sets.push("session_id = @session");
       p.session = view.sessionId;

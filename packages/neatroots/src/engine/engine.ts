@@ -1062,9 +1062,21 @@ ${library}`;
     }
     for (const work of run.deferred.splice(0)) await work();
     await this.summarize(run, snap);
-    setTimeout(() => {
-      if (!this.pending(run.traceId)) this.live.delete(run.traceId);
-    }, 60_000);
+    this.scheduleLiveRelease(run);
+  }
+
+  /**
+   * Releases a finished run's live state after a grace period for trailing spans. A hand-back
+   * reopens the run (endHandled false) after this was scheduled, and its live state (plan, decided
+   * spans, budgets) is needed again, so the release only applies to the run it was scheduled for,
+   * while that run is still ended.
+   */
+  private scheduleLiveRelease(run: LiveRun): void {
+    setTimeout(() => this.releaseLive(run), 60_000);
+  }
+
+  private releaseLive(run: LiveRun): void {
+    if (run.endHandled && this.live.get(run.traceId) === run && !this.pending(run.traceId)) this.live.delete(run.traceId);
   }
 
   private async triageRun(run: LiveRun, snap: TraceSnapshot): Promise<void> {

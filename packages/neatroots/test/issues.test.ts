@@ -3,7 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { decodeTraceJson } from "../src/otlp/codec.js";
 import { finalOutput, loadTrace, runGoal, runRoot } from "../src/engine/trace.js";
-import { batch, hex, llmSpan, makeRoots, s, span, type TestRoots } from "./helpers.js";
+import { batch, hex, llmSpan, makeRoots, markerSpan, s, span, type TestRoots } from "./helpers.js";
 
 // Bad input from outside (#11–#14): a buggy exporter or a script must get a clear error, and one
 // odd trace must never break the run page.
@@ -277,5 +277,44 @@ describe("a run whose top span has a remote parent (#157)", () => {
     const u = tb.roots.ingest([batch([span({ traceId: t, name: "another-root", kind: "workflow" })])]);
 
     expect(u[0]).toMatchObject({ rootEnded: false, rootHandedBack: false });
+  });
+
+  it("ends the run when a remote-parent root is sent open first and then with its end", async () => {
+    const tb = await makeRoots({ noEngine: true });
+    cleanup.push(tb.close);
+    const t = hex(16);
+    const remote = hex(8); // the caller's span id, from a propagated traceparent; never sent here
+    const root = span({
+      traceId: t,
+      parent: remote,
+      name: "POST /chat",
+      kind: "workflow",
+      flags: 0x300,
+      attrs: [s("neatlogs.workflow.input", '{"q":"hello"}'), s("neatlogs.workflow.output", '"hi there"')],
+    });
+    // A streaming exporter sends the span open first, then again with its end.
+    const u1 = tb.roots.ingest([batch([{ ...root, endTimeUnixNano: "0" }])]);
+    expect(u1[0]).toMatchObject({ rootEnded: false });
+    expect(tb.roots.store.getRun(t)).toMatchObject({ status: "running", root_span_id: root.spanId, root_ended: 0 });
+
+    const u2 = tb.roots.ingest([batch([root])]);
+    expect(u2[0]).toMatchObject({ rootEnded: true });
+    expect(tb.roots.store.getRun(t)).toMatchObject({ status: "ok", root_span_id: root.spanId, root_name: "POST /chat", root_ended: 1 });
+    expect(finalOutput(loadTrace(tb.roots.store, t))).toBe("hi there");
+  });
+
+  it("does not report a hand-back for a parentless completion marker", async () => {
+    const tb = await makeRoots({ noEngine: true });
+    cleanup.push(tb.close);
+    const t = hex(16);
+    const remote = hex(8);
+    tb.roots.ingest([batch([span({ traceId: t, parent: remote, name: "POST /chat", kind: "workflow", flags: 0x300 })])]);
+    const rootId = tb.roots.store.getRun(t)!.root_span_id;
+
+    // A marker with no parent must not read as the caller taking the root back: it doesn't replace
+    // the root, so no hand-back is reported and the engine's end bookkeeping stays put.
+    const u = tb.roots.ingest([batch([markerSpan(t, "")])]);
+    expect(u[0]).toMatchObject({ rootHandedBack: false });
+    expect(tb.roots.store.getRun(t)!.root_span_id).toBe(rootId);
   });
 });
