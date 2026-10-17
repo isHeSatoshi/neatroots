@@ -72,6 +72,32 @@ describe("whether a steering hook is actually talking to neatroots", () => {
     expect(s.steering.last_project).toBe("b");
   });
 
+  it("keeps the last named project when a later hook does not name one", async () => {
+    const tb = await served();
+    // The Python hook opens the stream without a project, so a stream subscribe after a claim must
+    // move the time without blanking the project the status line was showing.
+    await claim(tb, hex(16), "hookcheck");
+    expect((await status(tb.url)).steering.last_project).toBe("hookcheck");
+
+    const ctrl = new AbortController();
+    const res = await fetch(`${tb.url}/api/steer/stream`, { headers: { accept: "text/event-stream" }, signal: ctrl.signal });
+    const reader = res.body!.getReader();
+    await reader.read();
+    try {
+      const s = await status(tb.url);
+      expect(s.steering.hooks_connected).toBe(1);
+      expect(s.steering.last_project).toBe("hookcheck");
+      expect(s.steering.last_seen_ms).toBeGreaterThan(0);
+    } finally {
+      ctrl.abort();
+      await reader.cancel().catch(() => undefined);
+    }
+
+    // A hook that does name a project still updates it.
+    await claim(tb, hex(16), "other-project");
+    expect((await status(tb.url)).steering.last_project).toBe("other-project");
+  });
+
   it("counts a streaming client and records it too", async () => {
     const tb = await served();
     const ctrl = new AbortController();

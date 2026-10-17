@@ -443,7 +443,7 @@ export function mountApi(app: Hono, roots: Roots): void {
     streamSSE(c, async (stream) => {
       const queue: { event: string; data: string }[] = [];
       let wake: (() => void) | undefined;
-      roots.steerSeen = { at: Date.now(), project: c.req.query("project") ?? null };
+      roots.noteSteerSeen(c.req.query("project") ?? null);
       const off = roots.steering.subscribe((e) => {
         queue.push({ event: e.event, data: JSON.stringify(e.data) });
         wake?.();
@@ -476,7 +476,7 @@ export function mountApi(app: Hono, roots: Roots): void {
     const run = roots.store.getRun(b.trace_id);
     // A hook asking is a hook that is wired up, whatever it finds: record it before the branches
     // below, so "no hook has ever asked" is answerable for both SDKs.
-    roots.steerSeen = { at: Date.now(), project: run?.project ?? b.project ?? null };
+    roots.noteSteerSeen(run?.project ?? b.project ?? null);
     // Before any span of this run has arrived neatroots cannot know its project; say so, so the
     // hook flushes the SDK and asks again instead of caching "off".
     if (!run && !b.project) return c.json({ mode: "unknown", known: false, note: null });
