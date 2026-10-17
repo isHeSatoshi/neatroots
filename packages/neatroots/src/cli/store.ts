@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Command } from "commander";
 import { rootsHome } from "../config.js";
-import { Store, type StoreVerify } from "../store/db.js";
+import { SCHEMA_VERSION, Store, newerStoreMessage, type StoreVerify } from "../store/db.js";
 
 // neatroots store: what is on disk. The store is a database plus a tree of payload files beside
 // it, and a copy that takes only the database loses every large prompt and output.
@@ -30,6 +30,14 @@ export function registerStoreCommands(program: Command): void {
         r = Store.verify(dir);
       } catch (err) {
         console.log(`✗ ${(err as Error).message}`);
+        process.exitCode = 1;
+        return;
+      }
+      // The report would be about columns and rows this build does not know the shape of, so say
+      // what the store is instead: the same refusal a store gets on open, read-only here.
+      const version = Number(r.schema_version);
+      if (version > SCHEMA_VERSION) {
+        console.log(`✗ ${newerStoreMessage(version)}`);
         process.exitCode = 1;
         return;
       }

@@ -403,6 +403,14 @@ function metaValue(db: Database.Database, key: string): string | undefined {
   return (db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined)?.value;
 }
 
+/** What a store written by a newer neatroots is told, on open and by `neatroots store verify`. */
+export function newerStoreMessage(version: number | string): string {
+  return (
+    `this store was written by a newer neatroots (store schema ${version}, this build reads ${SCHEMA_VERSION}). ` +
+    `Update neatroots, or start it against a different home directory.`
+  );
+}
+
 /**
  * The report `Store.verify` returns, read from any handle: the one an open store holds, or a
  * read-only one. Reads only, so it is safe on a store the caller must not change.
@@ -513,12 +521,7 @@ export class Store {
     const found = this.getMeta("schema_version");
     if (!found) return;
     const version = Number(found);
-    if (Number.isFinite(version) && version > SCHEMA_VERSION) {
-      throw new Error(
-        `this store was written by a newer neatroots (store schema ${version}, this build reads ${SCHEMA_VERSION}). ` +
-          `Update neatroots, or start it against a different home directory.`,
-      );
-    }
+    if (Number.isFinite(version) && version > SCHEMA_VERSION) throw new Error(newerStoreMessage(version));
   }
 
   close(): void {

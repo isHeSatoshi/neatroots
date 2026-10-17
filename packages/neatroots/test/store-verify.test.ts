@@ -231,4 +231,15 @@ describe("neatroots store verify", () => {
     expect(bad.status).toBe(1);
     expect(bad.stdout).toMatch(new RegExp(`missing payload ${sha}`));
   });
+
+  it("refuses a store written by a newer neatroots, the same as opening it does", () => {
+    const { st, home } = store();
+    st.setMeta("schema_version", String(SCHEMA_VERSION + 1));
+    st.close();
+    closeTrackedStores();
+    const r = verifyCli(home);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toMatch(new RegExp(`store schema ${SCHEMA_VERSION + 1}, this build reads ${SCHEMA_VERSION}`));
+    expect(r.stdout).not.toMatch(/store reads whole/);
+  });
 });
