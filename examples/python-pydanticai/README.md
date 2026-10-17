@@ -22,12 +22,8 @@ What lands in neatroots:
 
 - `invoke_agent` → the run's agent span, `chat` → its LLM calls, `execute_tool` → its tool calls,
   with the model, per-call token counts, the conversation on each LLM span, and the session id.
+- The run's input and output previews, the tools offered (called or not) and the agent span's own
+  token counts come from `final_result`, `pydantic_ai.all_messages`, `gen_ai.tool.definitions` and
+  `gen_ai.aggregated_usage.*`, which neatroots reads as of #470.
 - The failure scenario (`MODEL=mock-sloppy` with an unknown order) has the agent claim success
   after a tool reported `404`, so `soft-tool-failure` and the honesty checks have something to find.
-
-Known gaps in what neatroots reads from pydantic-ai's spans today (none of them affect the checks):
-
-- the run's input/output previews are empty: the root span carries the answer in `final_result`
-  and the conversation in `pydantic_ai.all_messages`, and neatroots doesn't read either
-- tools that were offered but not called don't show up: they're in `gen_ai.tool.definitions`
-- the agent span's own token counts are empty: they're in `gen_ai.aggregated_usage.*`
