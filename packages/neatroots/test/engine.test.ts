@@ -350,6 +350,122 @@ evidence: { spans: { type: [workflow] } }
     tb.roots.ingest([batch([caller])]);
     await until(() => tb.roots.store.getSummary(t), 10_000);
   });
+
+  it("stops a pass the hand-back invalidated while the summary model was answering", async () => {
+    const { tb } = await setup();
+    const llm = tb.roots.llm as unknown as { chat: (...a: unknown[]) => Promise<unknown>; isAvailable: () => Promise<boolean> };
+    llm.isAvailable = async () => true; // a network probe that can flicker; the staleness guard is under test
+    const realChat = llm.chat.bind(tb.roots.llm);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let parked = false;
+    llm.chat = async (...args: unknown[]) => {
+      if ((args[1] as { schema?: { name?: string } } | undefined)?.schema?.name === "summary") {
+        parked = true;
+        await gate;
+      }
+      return realChat(...args);
+    };
+    const t = hex(16);
+    const callerId = hex(8);
+    // The callee ends first: the run ends on it and its end pass reaches the summary call.
+    tb.roots.ingest([batch([span({ traceId: t, parent: callerId, name: "tool-service", kind: "workflow", flags: 0x300 })])]);
+    await until(() => tb.roots.store.getRun(t)?.root_ended === 1);
+    await until(() => parked, 10_000); // the pass is inside the summary chat now
+
+    // The caller's own span arrives open: the run is running again and that pass is for a stale root.
+    const caller = span({ traceId: t, spanId: callerId, name: "caller-agent", kind: "workflow" });
+    tb.roots.ingest([batch([{ ...caller, endTimeUnixNano: "0" }])]);
+    release();
+    await new Promise((r) => setTimeout(r, 800)); // the stale pass resumes and finishes
+
+    // The answer that came back describes the callee's slice. Storing it would be the summary the
+    // real pass then skips, and with summariesPerRun at 1 the budget it took would be gone too.
+    expect(tb.roots.store.getSummary(t)).toBeUndefined();
+    expect(tb.roots.store.getRun(t)).toMatchObject({ status: "running", root_ended: 0 });
+
+    // The real end pass, on the full trace, still stores one.
+    tb.roots.ingest([batch([caller])]);
+    await until(() => tb.roots.store.getSummary(t), 10_000);
+  });
+
+  it("leaves deferred work the hand-back invalidated to the next end pass", async () => {
+    const llm = await mockLlm();
+    // No investigations budget, so every triaged finding queues its investigation instead of
+    // running it on the spot.
+    const tb = await makeRoots({ llmUrl: llm.url, config: (c) => (c.budgets.investigationsPerRun = 0) });
+    cleanup.push(async () => {
+      await tb.close();
+      await llm.close();
+    });
+    // Two rules on the callee, so the pass has two investigations queued behind it.
+    for (const id of ["callee-boom-a", "callee-boom-b"]) {
+      const rule = checkFromInput(`
+id: ${id}
+kind: rule
+title: The callee hit a problem
+rule:
+  type: match
+  field: input
+  pattern: BOOM
+  span:
+    type: workflow
+`).check;
+      if (!rule) throw new Error("rule did not parse");
+      tb.roots.checks.save(rule, "user");
+    }
+    const engine = tb.roots.engine as unknown as { decisions: { decide: (...a: unknown[]) => Promise<unknown> } };
+    const real = engine.decisions.decide.bind(engine.decisions);
+    engine.decisions.decide = async (...args: unknown[]) => {
+      const qs = args[1] as { name?: string }[] | undefined;
+      // Worth a closer look, so each finding wants an investigation.
+      if (qs?.some((q) => q.name === "triage")) return { answers: { triage: { score: 3 } }, backend: "test", model: "test" };
+      return real(...args);
+    };
+    const client = tb.roots.llm as unknown as { chat: (...a: unknown[]) => Promise<unknown>; isAvailable: () => Promise<boolean> };
+    client.isAvailable = async () => true;
+    const realChat = client.chat.bind(tb.roots.llm);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let parked = false;
+    const investigations: string[] = [];
+    client.chat = async (...args: unknown[]) => {
+      if ((args[1] as { schema?: { name?: string } } | undefined)?.schema?.name === "investigation") {
+        const user = (args[0] as { role: string; content: string }[]).find((m) => m.role === "user")?.content ?? "";
+        if (user.includes("The callee hit a problem")) {
+          investigations.push(user);
+          if (investigations.length === 1) {
+            parked = true;
+            await gate;
+          }
+        }
+      }
+      return realChat(...args);
+    };
+    const t = hex(16);
+    const callerId = hex(8);
+    // The callee ends first with the problem on it: both findings are triaged and both
+    // investigations are queued for the end pass.
+    tb.roots.ingest([batch([span({ traceId: t, parent: callerId, name: "tool-service", kind: "workflow", flags: 0x300, attrs: [s("neatlogs.workflow.input", "BOOM happened")] })])]);
+    await until(() => tb.roots.store.getRun(t)?.root_ended === 1);
+    const mine = () => tb.roots.store.findingsForTrace(t).filter((f) => f.title === "The callee hit a problem");
+    await until(() => mine().length === 2 && mine().every((f) => f.triage_score !== null), 10_000);
+    await until(() => parked, 10_000); // the pass is inside the first queued investigation now
+
+    // The caller's own span arrives open: the run is running again and that pass is for a stale root.
+    const caller = span({ traceId: t, spanId: callerId, name: "caller-agent", kind: "workflow" });
+    tb.roots.ingest([batch([{ ...caller, endTimeUnixNano: "0" }])]);
+    release();
+    await new Promise((r) => setTimeout(r, 800)); // the stale pass resumes and finishes
+
+    // The investigation already in flight finishes; the one still queued waits for the real pass
+    // rather than reading the callee's slice of the trace.
+    expect(investigations).toHaveLength(1);
+
+    // The real end pass, on the full trace, runs the queued work.
+    tb.roots.ingest([batch([caller])]);
+    await until(() => investigations.length === 2, 10_000);
+  });
 });
 
 describe("planning", () => {  it("makes one plan per workflow when runs start together, and always includes baseline questions", async () => {

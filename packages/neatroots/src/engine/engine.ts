@@ -1080,8 +1080,17 @@ ${library}`;
       await this.triageRun(run, snap);
     }
     if (stale()) return;
-    for (const work of run.deferred.splice(0)) await work();
-    await this.summarize(run, snap);
+    // Deferred investigations await models too, so a hand-back during one leaves the rest for the
+    // next pass instead of running them over the callee's slice of the trace.
+    const pending = run.deferred.splice(0);
+    let next = 0;
+    for (; next < pending.length; next++) {
+      if (stale()) break;
+      await pending[next]();
+    }
+    run.deferred.push(...pending.slice(next));
+    if (stale()) return;
+    await this.summarize(run, snap, stale);
     this.scheduleLiveRelease(run);
   }
 
@@ -1153,10 +1162,14 @@ ${library}`;
     return exp;
   }
 
-  private async summarize(run: LiveRun, snap: TraceSnapshot): Promise<void> {
+  private async summarize(run: LiveRun, snap: TraceSnapshot, stale: () => boolean = () => false): Promise<void> {
     if (run.used.summaries >= this.roots.config.budgets.summariesPerRun) return;
     if (this.roots.store.getSummary(run.traceId)) return;
     if (!(await this.llm.isAvailable())) return;
+    // The pass can be invalidated while the model is being asked for the summary, or while it
+    // answers: either way the text would describe the callee's slice of the trace, and the real
+    // pass would skip the summary it should have written.
+    if (stale()) return;
     run.used.summaries++;
     const findings = this.roots.store.findingsForTrace(run.traceId).filter((f) => f.status !== "dismissed" && f.status !== "failed");
     const ev = buildEvidence(snap, { fields: ["input", "output", "status", "error"], final_output: true, last: 12 }, { budget: 5000 });
@@ -1169,6 +1182,12 @@ ${library}`;
         ],
         { schema: { name: "summary", schema: SUMMARY_SCHEMA }, maxTokens: 220, priority: "low" },
       );
+      if (stale()) {
+        // Nothing is written and the budget the discarded summary used goes back, so the next pass
+        // can still write one.
+        run.used.summaries--;
+        return;
+      }
       const lines = (r.json as { lines?: string[] } | undefined)?.lines?.filter((l) => typeof l === "string" && l.trim());
       if (!lines?.length) return;
       const text = lines.slice(0, 3).map((l) => clip(l.trim().replace(/^\d+[.)]\s*/, ""), 200)).join("\n");
