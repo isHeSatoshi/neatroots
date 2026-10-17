@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { checkFromInput } from "../src/server/api.js";
 import { batch, hex, llmSpan, makeRoots, markerSpan, mockLlm, s, span, toolSpan, until, type TestRoots } from "./helpers.js";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -246,6 +247,58 @@ describe("a run that ended on a span whose parent had not arrived yet (#157)", (
       engine.releaseLive(entry);
       return engine.live.get(t) === undefined;
     });
+  });
+
+  it("stays running when one update carries the callee's end and the caller's open span", async () => {
+    const { tb } = await setup();
+    const t = hex(16);
+    const callerId = hex(8);
+    const live = async () => (await tb.roots.engine!.status()).liveRuns;
+    const callee = span({ traceId: t, parent: callerId, name: "tool-service", kind: "workflow", flags: 0x300 });
+    const caller = span({ traceId: t, spanId: callerId, name: "caller-agent", kind: "workflow" });
+    // Both arrive together, in the order a batch exporter sends them: the callee (ended) first.
+    // The store ends on the callee, then reopens on the caller; the engine must follow the run's
+    // final state rather than the update's flags, so no end pass is scheduled for an open run.
+    tb.roots.ingest([batch([callee, { ...caller, endTimeUnixNano: "0" }])]);
+    expect(tb.roots.store.getRun(t)).toMatchObject({ status: "running", root_span_id: callerId, root_ended: 0 });
+    await untilAsync(async () => (await live()) === 1);
+
+    // It ends when the caller's own span ends.
+    tb.roots.ingest([batch([caller])]);
+    await untilAsync(async () => (await live()) === 0);
+    expect(tb.roots.store.getRun(t)).toMatchObject({ status: "ok", root_span_id: callerId, root_name: "caller-agent", root_ended: 1 });
+  });
+
+  it("steers a rule the caller's span raises, even though the run had ended on the callee", async () => {
+    const { tb } = await setup();
+    tb.roots.steering.setMode("test-agent", "advisory");
+    const rule = checkFromInput(`
+id: caller-boom
+kind: rule
+title: The caller hit a problem
+rule:
+  type: match
+  field: input
+  pattern: BOOM
+  span:
+    type: workflow
+`).check;
+    if (!rule) throw new Error("rule did not parse");
+    tb.roots.checks.save(rule, "user");
+    const t = hex(16);
+    const callerId = hex(8);
+    // The callee ends first and the run ends on it; its end pass runs.
+    tb.roots.ingest([batch([span({ traceId: t, parent: callerId, name: "tool-service", kind: "workflow", flags: 0x300 })])]);
+    await until(() => tb.roots.store.getRun(t)?.root_ended === 1);
+    await new Promise((r) => setTimeout(r, 600)); // let the first end's 400 ms pass run
+    // The caller arrives open with a span that trips the rule. The rule has to see the reopened
+    // run, or the note is kept as never-sent instead of steering the active agent.
+    const caller = span({ traceId: t, spanId: callerId, name: "caller-agent", kind: "workflow", attrs: [s("neatlogs.workflow.input", "BOOM happened")] });
+    tb.roots.ingest([batch([{ ...caller, endTimeUnixNano: "0" }])]);
+    const f = await until(() => tb.roots.store.findingsForTrace(t).find((x) => x.check_id === "caller-boom"));
+    expect(f.status).toBe("raised");
+    const note = tb.roots.steering.claim(t, null);
+    expect(note?.text).toContain("The caller hit a problem");
   });
 });
 

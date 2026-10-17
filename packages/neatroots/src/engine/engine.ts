@@ -277,20 +277,22 @@ export class Engine {
       this.live.delete(u.traceId);
       return;
     }
-    const fresh = u.spans.filter((s) => s.isNew && !s.view.isMarker);
-    if (fresh.length) this.track(u.traceId, this.handleSpans(run, fresh.map((s) => s.row.span_id)));
     // The caller's own span arrived after the run ended on a span that only qualified through its
     // remote parent (#157). End-of-run work already ran on the callee's slice of the trace, so it is
     // allowed to run again on the full one. While the caller is still open there is more to come, so
-    // the run is running again and the end waits for the next rootEnded.
-    if (u.rootHandedBack) {
-      run.endHandled = false;
-      if (!u.rootEnded && !u.completed && this.roots.store.getRun(u.traceId)?.status === "running") {
-        run.ended = false;
-        clearTimeout(run.endTimer);
-      }
+    // the run is running again and the end waits for the next rootEnded. The run's final stored state
+    // decides, not this update's flags: one batch can carry the callee's end and the caller's open
+    // span together. This runs before the spans are processed, so a rule the caller's span raises
+    // sees the reopened run and can still steer.
+    const reopened = u.rootHandedBack && !u.completed && this.roots.store.getRun(u.traceId)?.status === "running";
+    if (u.rootHandedBack) run.endHandled = false;
+    if (reopened) {
+      run.ended = false;
+      clearTimeout(run.endTimer);
     }
-    if (u.rootEnded || u.completed) {
+    const fresh = u.spans.filter((s) => s.isNew && !s.view.isMarker);
+    if (fresh.length) this.track(u.traceId, this.handleSpans(run, fresh.map((s) => s.row.span_id)));
+    if (!reopened && (u.rootEnded || u.completed)) {
       run.ended = true;
       // Trailing spans can arrive in the next batch; give them a moment.
       clearTimeout(run.endTimer);

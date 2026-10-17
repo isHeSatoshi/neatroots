@@ -717,14 +717,21 @@ export class Store {
         sets.push("root_ended = 0", "ended_ms = NULL", "status = 'running'");
       }
     }
+    // A re-sent root reports the same session again (a streaming exporter sends it open, then with
+    // its end): the session's last-seen moves, but the run is not counted in it twice.
+    let sessionSeen = false;
     if (view.sessionId && (!run.session_id || isTop)) {
-      sets.push("session_id = @session");
-      p.session = view.sessionId;
+      if (view.sessionId !== run.session_id) {
+        sets.push("session_id = @session");
+        p.session = view.sessionId;
+      } else {
+        sessionSeen = true;
+      }
     }
     this.db.prepare(`UPDATE runs SET ${sets.join(", ")} WHERE trace_id = @trace`).run(p);
     const after = this.getRun(span.traceId)!;
     const sessionId = after.session_id ?? after.trace_id;
-    if (flags.created || p.session) this.touchSession(sessionId, after, now, flags.created || !!p.session);
+    if (flags.created || p.session || sessionSeen) this.touchSession(sessionId, after, now, flags.created || !!p.session);
     return flags;
   }
 

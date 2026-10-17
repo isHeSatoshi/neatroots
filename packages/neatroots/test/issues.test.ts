@@ -317,4 +317,19 @@ describe("a run whose top span has a remote parent (#157)", () => {
     expect(u[0]).toMatchObject({ rootHandedBack: false });
     expect(tb.roots.store.getRun(t)!.root_span_id).toBe(rootId);
   });
+
+  it("counts the run once in its session when the root is delivered twice", async () => {
+    const tb = await makeRoots({ noEngine: true });
+    cleanup.push(tb.close);
+    const t = hex(16);
+    const remote = hex(8);
+    const root = span({ traceId: t, parent: remote, name: "POST /chat", kind: "workflow", flags: 0x300, attrs: [s("neatlogs.session.id", "sess-twice")] });
+    const sessionCount = () => (tb.roots.store.db.prepare("SELECT run_count FROM sessions WHERE id = ?").get("sess-twice") as { run_count: number }).run_count;
+    // Sent open first, then again with its end: the same run joins the session once.
+    tb.roots.ingest([batch([{ ...root, endTimeUnixNano: "0" }])]);
+    expect(sessionCount()).toBe(1);
+    tb.roots.ingest([batch([root])]);
+    expect(tb.roots.store.getRun(t)!.session_id).toBe("sess-twice");
+    expect(sessionCount()).toBe(1);
+  });
 });
