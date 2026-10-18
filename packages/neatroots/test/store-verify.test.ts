@@ -92,6 +92,9 @@ describe("a payload that is not on disk", () => {
     expect(st.missingBlobs([damaged])).toEqual([sha]);
     expect(st.missingBlobs([healthy])).toEqual([]);
     expect(st.missingBlobs()).toEqual([sha]);
+    // An empty selection means no traces, not every trace: a forward of nothing must not be refused
+    // over a payload an unrelated run references.
+    expect(st.missingBlobs([])).toEqual([]);
   });
 
   it("refuses to forward a run whose payloads are gone instead of sending placeholders", async () => {

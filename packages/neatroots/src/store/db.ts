@@ -1522,16 +1522,17 @@ export class Store {
   /**
    * The payload shas the given traces reference but that are not on disk. A store copied without
    * its `blobs/` tree has these; every read of them reports a missing payload rather than an empty
-   * one, and forwarding refuses to send a trace with any.
+   * one, and forwarding refuses to send a trace with any. No argument means every trace; an empty
+   * selection means none of them, so a forward of nothing is not refused over an unrelated run.
    */
   missingBlobs(traceIds?: string[]): string[] {
-    const where = traceIds?.length ? "AND trace_id IN (SELECT value FROM json_each(?))" : "";
+    const where = traceIds ? "AND trace_id IN (SELECT value FROM json_each(?))" : "";
     const rows = this.db
       .prepare(
         `SELECT DISTINCT j.value AS sha FROM spans, json_each(CASE WHEN json_valid(spans.blobs) THEN spans.blobs ELSE '[]' END) AS j
          WHERE spans.blobs IS NOT NULL ${where}`,
       )
-      .all(...(traceIds?.length ? [JSON.stringify(traceIds)] : [])) as { sha: string }[];
+      .all(...(traceIds ? [JSON.stringify(traceIds)] : [])) as { sha: string }[];
     return rows.map((r) => r.sha).filter((sha) => !this.blobs.has(sha));
   }
 
