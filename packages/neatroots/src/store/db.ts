@@ -1641,6 +1641,7 @@ export class Store {
     setImmediate(step);
   }
 
+  /** One value from the meta table, or undefined when it isn't there. */
   getMeta(key: string): string | undefined {
     return metaValue(this.db, key);
   }
