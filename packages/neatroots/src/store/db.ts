@@ -1554,6 +1554,12 @@ export class Store {
     const db = new Database(file, { readonly: true });
     try {
       if (!db.prepare("SELECT 1 AS one FROM sqlite_master WHERE type = 'table' AND name = 'runs'").get()) throw new Error(`${file} is not a neatroots store (no runs table)`);
+      // Before the report, not after: it reads `spans.blobs` and counts `runs` and `spans`, and a
+      // store from a newer build may have renamed or dropped them, so the query would fail with a
+      // raw SQLite error instead of the refusal that says to update neatroots.
+      const found = db.prepare("SELECT 1 AS one FROM sqlite_master WHERE type = 'table' AND name = 'meta'").get() ? metaValue(db, "schema_version") : undefined;
+      const version = Number(found);
+      if (found && Number.isFinite(version) && version > SCHEMA_VERSION) throw new Error(newerStoreMessage(version));
       return verifyStore(db, file, dir, new BlobStore(path.join(dir, "blobs"), { create: false }));
     } finally {
       db.close();

@@ -177,6 +177,22 @@ describe("store verify leaves the store it inspects alone", () => {
     expect(fs.existsSync(dir)).toBe(false);
   });
 
+  it("refuses a newer store before reading tables it may have renamed", () => {
+    const { st, home } = store();
+    runWithPayload(st);
+    // A newer build could have renamed or dropped what the report reads; this stands in for that.
+    st.db.exec("DROP TABLE spans");
+    st.setMeta("schema_version", String(SCHEMA_VERSION + 1));
+    st.close();
+    closeTrackedStores();
+    const dir = path.join(home, "data");
+
+    // The refusal has to come first, or the report's own queries fail and the operator sees a raw
+    // SQLite error instead of being told to update neatroots.
+    expect(() => Store.verify(dir)).toThrow(new RegExp(`store schema ${SCHEMA_VERSION + 1}, this build reads ${SCHEMA_VERSION}`));
+    expect(() => Store.verify(dir)).not.toThrow(/no such table/);
+  });
+
   it("reads an older store without migrating it", () => {
     const { st, home } = store();
     const { t, big } = runWithPayload(st);
