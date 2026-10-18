@@ -301,9 +301,17 @@ function llmToolDefinitions(attrs: Attrs): ToolDefinition[] {
   }
   for (const r of collectIndexed(attrs, "llm.tools")) {
     const tool = (r.tool ?? r) as Record<string, Plain>;
-    const name = str(tool.name) ?? str(r.name);
+    // json_schema is a JSON string, either the bare parameters schema or the OpenAI tool wrapper
+    // ({type: "function", function: {name, description, parameters}}). A wrapper's nested fields
+    // win over the flattened ones; only a bare schema is used whole as the parameters.
+    const schema = maybeJson(tool.json_schema ?? r.json_schema);
+    const full = schema && typeof schema === "object" && !Array.isArray(schema) ? (schema as Record<string, Plain>) : undefined;
+    const inner = full && full.function && typeof full.function === "object" && !Array.isArray(full.function) ? (full.function as Record<string, Plain>) : undefined;
+    const fn = inner ?? full ?? {};
+    const name = str(tool.name) ?? str(r.name) ?? str(fn.name);
     if (!name) continue;
-    out.push({ name, description: str(tool.description) ?? str(r.description), parameters: maybeJson(tool.json_schema ?? r.json_schema ?? tool.input_schema) });
+    const parameters = maybeJson(fn.parameters ?? fn.input_schema ?? tool.input_schema) ?? (inner ? undefined : full);
+    out.push({ name, description: str(tool.description) ?? str(r.description) ?? str(fn.description), parameters });
   }
   return out;
 }
