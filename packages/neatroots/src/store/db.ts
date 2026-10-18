@@ -486,6 +486,7 @@ export class Store {
     return !fs.existsSync(current) && fs.existsSync(legacy) ? legacy : current;
   }
 
+  /** Opens the store, refusing one written by a newer neatroots before writing anything to it. */
   constructor(dir: string) {
     this.dir = dir;
     fs.mkdirSync(dir, { recursive: true });

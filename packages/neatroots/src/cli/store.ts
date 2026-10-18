@@ -9,6 +9,7 @@ import { Store, type StoreVerify } from "../store/db.js";
 
 const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 
+/** `neatroots store`: what the store on disk is made of, and whether it reads whole. */
 export function registerStoreCommands(program: Command): void {
   const store = program.command("store").description("The local store on disk: neatroots.db plus its payload files");
 

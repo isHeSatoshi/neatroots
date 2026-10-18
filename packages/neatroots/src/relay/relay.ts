@@ -183,6 +183,7 @@ export class Relay {
     };
   }
 
+  /** Sends the runs to the cloud, refusing one whose referenced payloads are gone rather than send placeholders. */
   async forward(traceIds: string[], initiatedBy: string, opts: { endpoint?: string; apiKey?: string } = {}): Promise<ForwardRow> {
     const endpoint = (opts.endpoint ?? this.endpoint()).replace(/\/+$/, "");
     const key = opts.apiKey ?? (await getCloudKey());
