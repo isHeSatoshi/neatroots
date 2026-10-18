@@ -403,6 +403,28 @@ function metaValue(db: Database.Database, key: string): string | undefined {
   return (db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined)?.value;
 }
 
+/**
+ * The payload shas spans reference, from the `spans.blobs` column the store writes on ingest.
+ * Throws when a row's metadata cannot be read: this build then cannot know what that span
+ * references, and every caller has to treat the store as damaged rather than as one with nothing
+ * to lose. A NULL column means no references, which is not an error.
+ */
+function referencedShas(db: Database.Database, traceIds?: string[]): string[] {
+  const where = traceIds ? "AND trace_id IN (SELECT value FROM json_each(?))" : "";
+  try {
+    return (
+      db
+        .prepare(
+          `SELECT DISTINCT j.value AS sha FROM spans, json_each(spans.blobs) AS j
+           WHERE spans.blobs IS NOT NULL ${where}`,
+        )
+        .all(...(traceIds ? [JSON.stringify(traceIds)] : [])) as { sha: string }[]
+    ).map((r) => r.sha);
+  } catch (err) {
+    throw new Error(`the payload references this store records cannot be read (${(err as Error).message}); the store may be damaged`);
+  }
+}
+
 /** What a store written by a newer neatroots is told, on open and by `neatroots store verify`. */
 export function newerStoreMessage(version: number | string): string {
   return (
@@ -418,9 +440,9 @@ export function newerStoreMessage(version: number | string): string {
 function verifyStore(db: Database.Database, file: string, dir: string, blobs: BlobStore): StoreVerify {
   const rows = db.prepare("PRAGMA quick_check").all() as Record<string, string>[];
   const quick = Object.values(rows[0] ?? {})[0] ?? "unknown";
-  const referenced = new Set(
-    (db.prepare("SELECT DISTINCT j.value AS sha FROM spans, json_each(CASE WHEN json_valid(spans.blobs) THEN spans.blobs ELSE '[]' END) AS j WHERE spans.blobs IS NOT NULL").all() as { sha: string }[]).map((r) => r.sha),
-  );
+  // Throws on unreadable metadata rather than reporting a store with nothing referenced: the whole
+  // point of the report is to say whether every payload a span points at is still there.
+  const referenced = new Set(referencedShas(db));
   const present = blobs.shas();
   const missing = [...referenced].filter((sha) => !blobs.has(sha));
   const n = (sql: string) => (db.prepare(sql).get() as { n: number }).n;
@@ -1497,6 +1519,8 @@ export class Store {
     if (!traceIds.length) return;
     const ids = JSON.stringify(traceIds);
     const inIds = "trace_id IN (SELECT value FROM json_each(?))";
+    // The fallback is deliberate here, unlike the guard in `reclaimUnreferencedBlobs`: a row whose
+    // metadata cannot be read only leaves its payloads behind, and the runs still get deleted.
     const shas = (this.db.prepare(`SELECT DISTINCT j.value AS sha FROM spans, json_each(CASE WHEN json_valid(spans.blobs) THEN spans.blobs ELSE '[]' END) AS j WHERE spans.${inIds} AND spans.blobs IS NOT NULL`).all(ids) as { sha: string }[]).map((r) => r.sha);
     const tx = this.db.transaction(() => {
       this.searchIds.deleteRuns(ids);
@@ -1513,8 +1537,11 @@ export class Store {
   private reclaimUnreferencedBlobs(candidates: Iterable<string>): void {
     const shas = [...new Set(candidates)];
     if (!shas.length) return;
+    // A span whose metadata cannot be read might reference any of these, so keep them all rather
+    // than delete a payload a damaged row still points at. Reclaiming later costs disk, not data.
+    if (this.db.prepare("SELECT 1 AS one FROM spans WHERE blobs IS NOT NULL AND json_valid(blobs) = 0 LIMIT 1").get()) return;
     const used = new Set(
-      (this.db.prepare("SELECT DISTINCT j.value AS sha FROM spans, json_each(CASE WHEN json_valid(spans.blobs) THEN spans.blobs ELSE '[]' END) AS j WHERE spans.blobs IS NOT NULL AND j.value IN (SELECT value FROM json_each(?))").all(JSON.stringify(shas)) as { sha: string }[]).map((r) => r.sha),
+      (this.db.prepare("SELECT DISTINCT j.value AS sha FROM spans, json_each(spans.blobs) AS j WHERE spans.blobs IS NOT NULL AND j.value IN (SELECT value FROM json_each(?))").all(JSON.stringify(shas)) as { sha: string }[]).map((r) => r.sha),
     );
     for (const sha of shas) if (!used.has(sha)) this.blobs.delete(sha);
   }
@@ -1524,16 +1551,11 @@ export class Store {
    * its `blobs/` tree has these; every read of them reports a missing payload rather than an empty
    * one, and forwarding refuses to send a trace with any. No argument means every trace; an empty
    * selection means none of them, so a forward of nothing is not refused over an unrelated run.
+   * Throws when the store's payload metadata cannot be read, so a caller refuses to send rather
+   * than forward a reference it could not check.
    */
   missingBlobs(traceIds?: string[]): string[] {
-    const where = traceIds ? "AND trace_id IN (SELECT value FROM json_each(?))" : "";
-    const rows = this.db
-      .prepare(
-        `SELECT DISTINCT j.value AS sha FROM spans, json_each(CASE WHEN json_valid(spans.blobs) THEN spans.blobs ELSE '[]' END) AS j
-         WHERE spans.blobs IS NOT NULL ${where}`,
-      )
-      .all(...(traceIds ? [JSON.stringify(traceIds)] : [])) as { sha: string }[];
-    return rows.map((r) => r.sha).filter((sha) => !this.blobs.has(sha));
+    return referencedShas(this.db, traceIds).filter((sha) => !this.blobs.has(sha));
   }
 
   /**

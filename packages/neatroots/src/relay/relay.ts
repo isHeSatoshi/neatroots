@@ -195,8 +195,14 @@ export class Relay {
       return this.roots.store.insertForward({ ...base, status: "error", http_status: null, span_count: 0, bytes: 0, redactions: 0, error: `no run with id ${unknown.join(", ")}` });
     }
     // A payload a span references but that is not on disk would be sent as a placeholder instead of
-    // the prompt or output it was, so refuse rather than report a forward that lost content.
-    const missing = this.roots.store.missingBlobs(traceIds);
+    // the prompt or output it was, so refuse rather than report a forward that lost content. The
+    // check throws when the store's payload metadata cannot be read, which is also a refusal.
+    let missing: string[];
+    try {
+      missing = this.roots.store.missingBlobs(traceIds);
+    } catch (err) {
+      return this.roots.store.insertForward({ ...base, status: "error", http_status: null, span_count: 0, bytes: 0, redactions: 0, error: (err as Error).message });
+    }
     if (missing.length) {
       return this.roots.store.insertForward({
         ...base,

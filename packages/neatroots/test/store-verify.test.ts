@@ -97,6 +97,30 @@ describe("a payload that is not on disk", () => {
     expect(st.missingBlobs([])).toEqual([]);
   });
 
+  it("fails closed when a span's payload metadata cannot be read", () => {
+    const { st, home } = store();
+    const { t, sha } = runWithPayload(st);
+    fs.rmSync(blobFile(home, sha));
+    st.db.prepare("UPDATE spans SET blobs = ? WHERE trace_id = ?").run("not json", t);
+
+    // Reading the row as "no references" made both the guard and the report blind to the payload
+    // that is actually gone, which is how a placeholder reached a forward.
+    expect(() => st.missingBlobs()).toThrow(/payload references this store records cannot be read/);
+    expect(() => st.verify()).toThrow(/store may be damaged/);
+  });
+
+  it("keeps payloads a damaged row might still reference", () => {
+    const { st, home } = store();
+    // Two runs over the same payload content, so the same sha: the healthy one keeps the reference.
+    const { t: damaged, sha } = runWithPayload(st, "x");
+    const { t: other } = runWithPayload(st, "x");
+    st.db.prepare("UPDATE spans SET blobs = ? WHERE trace_id = ?").run("not json", damaged);
+
+    st.deleteRuns([other]); // reclaims what only `other` referenced; the sha is not that
+    expect(fs.existsSync(blobFile(home, sha))).toBe(true);
+    expect(payloadAttr(st, damaged)).toBe("x".repeat(100_000)); // still readable, so still whole
+  });
+
   it("refuses to forward a run whose payloads are gone instead of sending placeholders", async () => {
     const tb = await makeRoots({ serve: true, noEngine: true });
     const sink = await makeRoots({ serve: true, noEngine: true });
@@ -120,6 +144,25 @@ describe("a payload that is not on disk", () => {
     expect(refused.error).toMatch(/payload file\(s\) this run references are missing/);
     expect(refused.error).toMatch(/store verify/);
     expect(refused.span_count).toBe(0);
+  });
+
+  it("refuses to forward a store whose payload metadata cannot be read", async () => {
+    const tb = await makeRoots({ serve: true, noEngine: true });
+    const sink = await makeRoots({ serve: true, noEngine: true });
+    cleanup.push(tb.close, sink.close);
+    const t = hex(16);
+    const root = hex(8);
+    const big = "x".repeat(100_000);
+    tb.roots.ingest([batch([span({ traceId: t, spanId: root, name: "refund", kind: "workflow", attrs: [s("neatlogs.workflow.input", big)] })])]);
+
+    // Damaged metadata: the reference is still in the span, so the guard has to fail closed rather
+    // than read the row as having nothing to lose and forward the placeholder the reader produces.
+    tb.roots.store.db.prepare("UPDATE spans SET blobs = ? WHERE trace_id = ?").run("not json", t);
+    const refused = await tb.roots.relay.forward([t], "test", { endpoint: sink.url, apiKey: "nl-test-key" });
+    expect(refused.status).toBe("error");
+    expect(refused.error).toMatch(/payload references this store records cannot be read/);
+    expect(refused.span_count).toBe(0);
+    expect(sink.roots.store.batchesForTraces([t])).toEqual([]);
   });
 });
 
@@ -274,6 +317,18 @@ describe("neatroots store verify", () => {
     const r = verifyCli(home);
     expect(r.status).toBe(1);
     expect(r.stdout).toMatch(new RegExp(`store schema ${SCHEMA_VERSION + 1}, this build reads ${SCHEMA_VERSION}`));
+    expect(r.stdout).not.toMatch(/store reads whole/);
+  });
+
+  it("fails on a store whose payload metadata cannot be read", () => {
+    const { st, home } = store();
+    runWithPayload(st);
+    st.db.exec("UPDATE spans SET blobs = 'not json'");
+    st.close();
+    closeTrackedStores();
+    const r = verifyCli(home);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toMatch(/payload references this store records cannot be read/);
     expect(r.stdout).not.toMatch(/store reads whole/);
   });
 });
