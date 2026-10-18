@@ -193,6 +193,21 @@ describe("store verify leaves the store it inspects alone", () => {
     expect(() => Store.verify(dir)).not.toThrow(/no such table/);
   });
 
+  it("refuses a newer store before the runs-table probe too", () => {
+    const { st, home } = store();
+    runWithPayload(st);
+    // The probe is what tells a non-neatroots database apart; a newer schema can rename `runs`,
+    // and then the probe would answer for it before the version check ran.
+    st.db.exec("DROP TABLE runs");
+    st.setMeta("schema_version", String(SCHEMA_VERSION + 1));
+    st.close();
+    closeTrackedStores();
+    const dir = path.join(home, "data");
+
+    expect(() => Store.verify(dir)).toThrow(new RegExp(`store schema ${SCHEMA_VERSION + 1}, this build reads ${SCHEMA_VERSION}`));
+    expect(() => Store.verify(dir)).not.toThrow(/no runs table/);
+  });
+
   it("reads an older store without migrating it", () => {
     const { st, home } = store();
     const { t, big } = runWithPayload(st);
