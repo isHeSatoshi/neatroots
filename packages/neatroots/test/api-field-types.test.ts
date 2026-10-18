@@ -75,6 +75,18 @@ describe("a boolean field must be a JSON boolean", () => {
     expect(ok.status).toBe(201);
     expect((await ok.json()) as unknown).toMatchObject({ allow_edits: false, allow_commands: true });
   });
+
+  it("refuses an explicit null, which is supplied rather than absent", async () => {
+    const { post } = await serve();
+    const id = "repeated-tool-call";
+    // A null is not "leave it as it is": it is a value of the wrong type, and `?? true` would have
+    // read it as "enable" while the reply said ok.
+    expect((await post(`/api/checks/${id}/enabled`, { enabled: null })).status).toBe(400);
+    expect(t!.roots.store.checkStats()[id]?.enabled).toBe(1);
+    expect((await post("/api/llm/external", { model: null })).status).toBe(400);
+    expect(await refusal(await post("/api/llm/external", { base_url: null }))).toBe("base_url must be a string");
+    expect((await post("/api/chat/sessions", { agent: "codex", cwd: null })).status).toBe(400);
+  });
 });
 
 describe("a string field must be a JSON string", () => {
