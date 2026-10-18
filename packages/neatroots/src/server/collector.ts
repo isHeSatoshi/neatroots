@@ -74,9 +74,19 @@ export function mountCollector(app: Hono, roots: Roots): void {
 
   // The Neatlogs HTTP trace API and Browser SDK: one JSON tree per request, no ids.
   app.post("/v1/trace", async (c) => {
+    let body: Buffer;
+    try {
+      body = await readBody(c);
+    } catch (err) {
+      // A body over the limit is not malformed JSON, and an exporter that reads 400 retries the
+      // same oversized payload forever; 413 is the answer that tells it to send less.
+      const status = (err as { status?: number }).status ?? 400;
+      log.warn(`rejected HTTP trace payload: ${(err as Error).message}`);
+      return c.json({ error: "Validation error", details: { body: (err as Error).message } }, status as 400);
+    }
     let parsed: unknown;
     try {
-      parsed = JSON.parse((await readBody(c)).toString("utf8"));
+      parsed = JSON.parse(body.toString("utf8"));
     } catch (err) {
       return c.json({ error: "Validation error", details: { body: `not JSON: ${(err as Error).message}` } }, 400);
     }
@@ -97,7 +107,10 @@ export function mountCollector(app: Hono, roots: Roots): void {
       const records = isJson(c) ? decodeLogsJson(JSON.parse(body.toString("utf8"))) : decodeLogsProtobuf(body);
       roots.store.ingestLogs(records);
     } catch (err) {
-      return c.json({ code: 3, message: `invalid OTLP logs payload: ${(err as Error).message}` }, 400);
+      // Same as /v1/trace: an oversized body is a 413, not a malformed payload.
+      const status = (err as { status?: number }).status ?? 400;
+      if (status === 413) log.warn(`rejected OTLP logs payload: ${(err as Error).message}`);
+      return c.json({ code: 3, message: `invalid OTLP logs payload: ${(err as Error).message}` }, status as 400);
     }
     if (isJson(c)) return c.json({ partialSuccess: {} });
     return new Response(new Uint8Array(), { status: 200, headers: { "content-type": "application/x-protobuf" } });
