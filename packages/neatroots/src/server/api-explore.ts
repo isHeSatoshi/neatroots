@@ -205,6 +205,8 @@ export function mountExploreApi(app: Hono, roots: Roots): void {
   app.post("/api/runs/:traceId/replay", async (c) => {
     const traceId = c.req.param("traceId");
     const b = await body<{ span_id?: string; messages?: { role: string; content: string }[]; edit?: { from: string; to: string }; input?: string; model?: string; system?: string; tools?: boolean }>(c);
+    // A truthy non-boolean ("false", 0) would silently keep the tools on; refuse it up front.
+    if (b.tools !== undefined && typeof b.tools !== "boolean") return err(c, 400, "tools must be a boolean");
     try {
       if (b.span_id) return c.json(await roots.replays.replayLlm(traceId, b.span_id, { messages: b.messages, edit: b.edit, model: b.model || undefined, system: b.system || undefined, tools: b.tools }));
       const { replay } = roots.replays.startRun(traceId, { input: b.input, model: b.model || undefined, system: b.system || undefined });

@@ -296,7 +296,7 @@ class OpenAiTransport implements Transport {
     };
     const choice = data.choices?.[0];
     const text = choice?.message?.content ?? "";
-    const toolCalls = (choice?.message?.tool_calls ?? []).map((c) => ({ id: c.id, name: c.function?.name ?? "tool", arguments: c.function?.arguments ?? "{}" }));
+    const toolCalls = (choice?.message?.tool_calls ?? []).map((c) => ({ id: c.id, name: c.function?.name ?? "tool", arguments: c.function?.arguments?.trim() || "{}" }));
     const result: ChatResult = {
       text,
       toolCalls: toolCalls.length ? toolCalls : undefined,

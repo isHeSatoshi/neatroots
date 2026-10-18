@@ -60,6 +60,12 @@ describe("replay", () => {
     ]);
   });
 
+  it("normalizes empty recorded tool-call arguments to an empty object", () => {
+    expect(toChat([{ role: "assistant", content: "", tool_calls: [{ name: "f", arguments: "" }] }], { structuredToolTurns: true })).toEqual([
+      { role: "assistant", content: "", tool_calls: [{ id: "replay_tool_0", name: "f", arguments: "{}" }] },
+    ]);
+  });
+
   it("forks one LLM call with an edited message and links the new run", async () => {
     llm = await mockLlm();
     t = await makeRoots({ llmUrl: llm.url, noEngine: true });
@@ -131,6 +137,39 @@ describe("replay", () => {
       { role: "user", content: '[tool result from lookup_order]\n{"status":"delivered"}' },
     ]);
     expect(loadTrace(t.roots.store, r.new_trace_id!).spans.find((sp) => sp.kind === "LLM")?.toolCalls).toBeUndefined();
+  });
+
+  it("reads OpenInference tool definitions, wrapped or bare", async () => {
+    t = await makeRoots({ noEngine: true });
+    const traceId = hex(16);
+    const root = span({ traceId, name: "refunds", kind: "workflow" });
+    const call = span({
+      traceId,
+      parent: root.spanId,
+      name: "openai.chat.completions.create",
+      kind: "llm",
+      attrs: [
+        s("llm.tools.0.tool.name", "lookup_order"),
+        s("llm.tools.0.tool.json_schema", JSON.stringify({ type: "function", function: { name: "lookup_order", description: "Look up an order", parameters: { type: "object", properties: { order_id: { type: "string" } } } } })),
+        s("llm.tools.1.tool.name", "issue_refund"),
+        s("llm.tools.1.tool.json_schema", JSON.stringify({ type: "object", properties: { order_id: { type: "string" } } })),
+      ],
+    });
+    t.roots.ingest([batch([root, call], "refund-agent")]);
+    const stored = loadTrace(t.roots.store, traceId).spans.find((sp) => sp.kind === "LLM")!;
+    expect(stored.toolDefinitions).toEqual([
+      { name: "lookup_order", description: "Look up an order", parameters: { type: "object", properties: { order_id: { type: "string" } } } },
+      { name: "issue_refund", parameters: { type: "object", properties: { order_id: { type: "string" } } } },
+    ]);
+  });
+
+  it("refuses a tools flag that isn't a boolean before starting a replay", async () => {
+    t = await makeRoots({ noEngine: true, serve: true });
+    const x = seed(t);
+    const bad = await fetch(`${t!.url}/api/runs/${x.traceId}/replay`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ span_id: x.l1.spanId, tools: "false" }) });
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toMatch(/tools must be a boolean/);
+    expect(t.roots.replays.forRun(x.traceId)).toHaveLength(0);
   });
 
   it("re-runs the agent through its registered command and links the run it sends", async () => {

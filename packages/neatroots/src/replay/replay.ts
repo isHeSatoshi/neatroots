@@ -119,7 +119,8 @@ export function toChat(messages: Plain | undefined, opts: { structuredToolTurns?
       const mapped = calls.map((c) => {
         const id = text(c.id) ?? `replay_tool_${generated++}`;
         pending.push(id);
-        return { id, name: text(c.name) ?? "tool", arguments: typeof c.arguments === "string" ? c.arguments : JSON.stringify(c.arguments ?? {}) };
+        // An empty arguments string is not valid JSON; a completed call carries an object.
+        return { id, name: text(c.name) ?? "tool", arguments: typeof c.arguments === "string" ? c.arguments.trim() || "{}" : JSON.stringify(c.arguments ?? {}) };
       });
       out.push({ role: "assistant", content, tool_calls: mapped });
       continue;

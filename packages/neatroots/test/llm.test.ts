@@ -282,6 +282,18 @@ describe("tool-call replays", () => {
     ]);
   });
 
+  it("normalizes an empty provider arguments string to {}", async () => {
+    const srv = await mock((r) =>
+      r.path.endsWith("/models")
+        ? { json: { data: [{ id: "local-model" }] } }
+        : { json: { choices: [{ message: { content: null, tool_calls: [{ id: "call_1", function: { name: "issue_refund", arguments: "" } }] } }], model: "local-model" } },
+    );
+    closers.push(srv.close);
+    const llm = new LlmClient(cfgWith((c) => Object.assign(c, { baseUrl: `${srv.url}/v1`, enabled: true })), { secret: async () => undefined });
+    const r = await llm.chat(turns, { tools });
+    expect(r.toolCalls).toEqual([{ id: "call_1", name: "issue_refund", arguments: "{}" }]);
+  });
+
   it("sends tools and structured tool turns on the Anthropic path, and reads a tool-call answer", async () => {
     const srv = await mock(() => ({ json: claudeReply("", { content: [{ type: "tool_use", id: "toolu_1", name: "issue_refund", input: { order_id: "4512" } }], stop_reason: "tool_use" }) }));
     closers.push(srv.close);
