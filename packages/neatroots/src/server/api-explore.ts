@@ -7,9 +7,10 @@ import { listCloudProjects, listCloudTraces, NO_CLOUD_TOKEN } from "../ingest/im
 import { cloudImportAuth, cloudImportBase, ImportError, parseTraceFile } from "../ingest/importers/index.js";
 import { deleteCloudToken, getCloudToken, setCloudToken } from "../relay/keychain.js";
 import { buildChat } from "../semantics/chat-view.js";
-import { body, clampInt, err } from "./util.js";
+import { body, clampInt, err, str, optStr, optBool } from "./util.js";
 import { runSummary } from "./api.js";
 import { bodyLimit } from "hono/body-limit";
+import { HTTPException } from "hono/http-exception";
 import type { RunFilter } from "../store/db.js";
 
 // Run views (chat, conversation), search, imports, cloud import, replays and the in-app coding
@@ -205,9 +206,25 @@ export function mountExploreApi(app: Hono, roots: Roots): void {
   app.post("/api/runs/:traceId/replay", async (c) => {
     const traceId = c.req.param("traceId");
     const b = await body<{ span_id?: string; messages?: { role: string; content: string }[]; edit?: { from: string; to: string }; input?: string; model?: string; system?: string }>(c);
+    // The overrides were trusted, so a number as `system` was stored and a non-string `edit.from`
+    // failed deep in the replay with a raw TypeError. Checked here, the way the MCP replay tools do.
+    const spanId = optStr(b.span_id, "span_id");
+    const input = optStr(b.input, "input");
+    const model = optStr(b.model, "model");
+    const system = optStr(b.system, "system");
+    let messages: { role: string; content: string }[] | undefined;
+    if (b.messages !== undefined && b.messages !== null) {
+      if (!Array.isArray(b.messages)) throw new HTTPException(400, { message: "messages must be an array" });
+      messages = b.messages.map((m, i) => ({ role: str(m?.role, `messages[${i}].role`), content: str(m?.content, `messages[${i}].content`) }));
+    }
+    let edit: { from: string; to: string } | undefined;
+    if (b.edit !== undefined && b.edit !== null) {
+      if (typeof b.edit !== "object" || Array.isArray(b.edit)) throw new HTTPException(400, { message: "edit must be an object with from and to" });
+      edit = { from: str(b.edit.from, "edit.from"), to: str(b.edit.to, "edit.to") };
+    }
     try {
-      if (b.span_id) return c.json(await roots.replays.replayLlm(traceId, b.span_id, { messages: b.messages, edit: b.edit, model: b.model || undefined, system: b.system || undefined }));
-      const { replay } = roots.replays.startRun(traceId, { input: b.input, model: b.model || undefined, system: b.system || undefined });
+      if (spanId) return c.json(await roots.replays.replayLlm(traceId, spanId, { messages, edit, model: model || undefined, system: system || undefined }));
+      const { replay } = roots.replays.startRun(traceId, { input, model: model || undefined, system: system || undefined });
       return c.json(replay, 202);
     } catch (e) {
       return err(c, 400, (e as Error).message);
@@ -238,8 +255,18 @@ export function mountExploreApi(app: Hono, roots: Roots): void {
   app.post("/api/chat/sessions", async (c) => {
     const b = await body<{ agent: "claude" | "codex"; cwd?: string; trace_id?: string; allow_edits?: boolean; allow_commands?: boolean; title?: string }>(c);
     if (b.agent !== "claude" && b.agent !== "codex") return err(c, 400, "agent must be claude or codex");
+    // Read through the checks: `cwd` and `title` reached `.trim()` and answered with a raw TypeError,
+    // and the permission flags were coerced by `!!`, so `"false"` allowed edits and commands.
+    const opts = {
+      ...b,
+      cwd: optStr(b.cwd, "cwd"),
+      trace_id: optStr(b.trace_id, "trace_id"),
+      title: optStr(b.title, "title"),
+      allow_edits: optBool(b.allow_edits, "allow_edits"),
+      allow_commands: optBool(b.allow_commands, "allow_commands"),
+    };
     try {
-      return c.json(roots.chats.create(b), 201);
+      return c.json(roots.chats.create(opts), 201);
     } catch (e) {
       return err(c, 400, (e as Error).message);
     }
@@ -250,8 +277,17 @@ export function mountExploreApi(app: Hono, roots: Roots): void {
   });
   app.patch("/api/chat/sessions/:id", async (c) => {
     const b = await body<{ allow_edits?: boolean; allow_commands?: boolean; title?: string }>(c);
+    // Only the fields actually sent go in the patch: `update` spreads it over the session, so an
+    // explicit undefined would clear a flag the caller never mentioned.
+    const allowEdits = optBool(b.allow_edits, "allow_edits");
+    const allowCommands = optBool(b.allow_commands, "allow_commands");
+    const title = optStr(b.title, "title");
+    const patch: { allow_edits?: boolean; allow_commands?: boolean; title?: string } = {};
+    if (allowEdits !== undefined) patch.allow_edits = allowEdits;
+    if (allowCommands !== undefined) patch.allow_commands = allowCommands;
+    if (title !== undefined) patch.title = title;
     try {
-      return c.json(roots.chats.update(c.req.param("id"), b));
+      return c.json(roots.chats.update(c.req.param("id"), patch));
     } catch (e) {
       return err(c, 404, (e as Error).message);
     }

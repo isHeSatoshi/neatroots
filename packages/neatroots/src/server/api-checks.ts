@@ -5,7 +5,7 @@ import { AnyCheck, isQuestion, isRule, type Check } from "../checks/types.js";
 import { parseChecks, checkDirState } from "../checks/registry.js";
 import { checkWarnings } from "../checks/lint.js";
 import { draftCheckFromConcern } from "../engine/assist.js";
-import { err, body } from "./util.js";
+import { err, body, str, optStr, optBool } from "./util.js";
 import { llmErrorMessage } from "../models/llm.js";
 import { regexProblem } from "../util/regex.js";
 
@@ -87,7 +87,8 @@ export function mountChecksApi(app: Hono, roots: Roots): void {
   app.post("/api/checks/:id/enabled", async (c) => {
     const b = await body<{ enabled?: boolean }>(c);
     if (!roots.checks.get(c.req.param("id"))) return err(c, 404, "check not found");
-    roots.store.setCheckEnabled(c.req.param("id"), b.enabled !== false);
+    // `"false"` is a truthy string, so the old `!== false` read every other type as enabled.
+    roots.store.setCheckEnabled(c.req.param("id"), optBool(b.enabled, "enabled") ?? true);
     return c.json({ ok: true });
   });
 
@@ -95,9 +96,13 @@ export function mountChecksApi(app: Hono, roots: Roots): void {
 
   app.post("/api/checks/draft", async (c) => {
     const b = await body<{ concern?: string; workflow?: string; project?: string }>(c);
-    if (!b.concern || b.concern.length < 8) return err(c, 400, "describe the concern in a sentence");
+    // `b.concern.length < 8` only held for strings: a number or an object drafted a check from it.
+    const concern = str(b.concern, "concern");
+    if (concern.length < 8) return err(c, 400, "describe the concern in a sentence");
+    const workflow = optStr(b.workflow, "workflow");
+    const project = optStr(b.project, "project");
     try {
-      const check = await draftCheckFromConcern(roots, b.concern, { workflow: b.workflow, project: b.project, signal: c.req.raw.signal });
+      const check = await draftCheckFromConcern(roots, concern, { workflow, project, signal: c.req.raw.signal });
       return c.json({ check, yaml: YAML.stringify(check), warnings: checkWarnings(check) });
     } catch (e) {
       return err(c, 503, llmErrorMessage(e));
