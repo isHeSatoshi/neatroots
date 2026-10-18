@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadTrace } from "../src/engine/trace.js";
 import { buildChat } from "../src/semantics/chat-view.js";
 import { currentRequest } from "../src/store/db.js";
-import { batch, hex, makeRoots, s, span, toolSpan, type TestRoots } from "./helpers.js";
+import { batch, hex, llmSpan, makeRoots, s, span, toolSpan, type TestRoots } from "./helpers.js";
 
 let t: TestRoots | undefined;
 afterEach(async () => {
@@ -70,5 +70,31 @@ describe("an agent step whose tool call the SDK didn't record", () => {
     ]);
     const assistant = buildChat(loadTrace(t.roots.store, tid)).items.find((i) => i.type === "assistant");
     expect(assistant).toMatchObject({ inferred: true, tool_calls: [{ name: "issue_refund" }] });
+  });
+});
+
+describe("a run whose root span is the llm call itself (#273)", () => {
+  it("keeps the message roles and the recorded tool call", async () => {
+    t = await makeRoots({ noEngine: true });
+    const tid = hex(16);
+    // No parent: the LLM call is the root of the run, as an SDK sends when nothing wraps it.
+    t.roots.ingest([
+      batch([
+        llmSpan(tid, "", {
+          system: "You are a refund agent.",
+          user: "Refund order 4512",
+          out: "Looking up the order.",
+          toolCalls: [{ name: "lookup_order", args: '{"order_id":"4512"}' }],
+        }),
+      ]),
+    ]);
+    const items = buildChat(loadTrace(t.roots.store, tid)).items;
+
+    // The walk only visits the root's children, so the root LLM never reached the message parser
+    // and the fallback flattened system + user into one card with no tool call.
+    expect(items.map((i) => i.type)).toEqual(["system", "user", "assistant"]);
+    expect(items[0]).toMatchObject({ type: "system", text: "You are a refund agent." });
+    expect(items[1]).toMatchObject({ type: "user", text: "Refund order 4512" });
+    expect(items[2]).toMatchObject({ type: "assistant", text: "Looking up the order.", tool_calls: [{ name: "lookup_order" }] });
   });
 });

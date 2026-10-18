@@ -58,6 +58,10 @@ export function buildChat(t: TraceSnapshot, rootSpanId?: string): { root: string
     }
   };
   walk(root);
+  // The walk visits the root's children, so when the run's root is the LLM call itself nothing
+  // reached the message parser below: the fallback flattened the whole input into one user card and
+  // dropped the recorded tool calls. A root LLM call is in scope like any other.
+  if (root.kind === "LLM") inScope.push(root);
   inScope.sort((a, b) => a.startMs - b.startMs || a.seq - b.seq);
   const hasTools = inScope.some((s) => s.kind === "TOOL" || s.kind === "MCP_TOOL");
   const count = (s: SpanInfo, kind: string, seen = new Set<string>([s.id])): number =>
