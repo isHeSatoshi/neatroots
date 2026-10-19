@@ -8,14 +8,22 @@ import { log } from "../src/util/log.js";
  * The time limit on a check's pattern is wall clock, so on a loaded machine a pattern that normally
  * takes a fraction of a millisecond can be descheduled past it. These tests drive that first
  * timeout deliberately: `state.timeouts` is how many of the next calls report running out of time.
+ * `state.burnMs` makes each call take real time, which is how the retry's own budget is measured.
  */
-const state = vi.hoisted(() => ({ timeouts: 0 }));
+const state = vi.hoisted(() => ({ timeouts: 0, burnMs: 0, calls: 0 }));
 
 vi.mock("../src/util/regex.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/util/regex.js")>();
   return {
     ...actual,
     testWithin: (re: RegExp, s: string, ms: number) => {
+      state.calls++;
+      if (state.burnMs > 0) {
+        const until = Date.now() + state.burnMs;
+        while (Date.now() < until) {
+          // A pattern that is slow on every span, rather than one that was descheduled once.
+        }
+      }
       if (state.timeouts > 0) {
         state.timeouts--;
         return undefined;
@@ -46,6 +54,23 @@ function traceFile(name: string, spanName: string, traceId: string, spanId: stri
   };
   const file = path.join(dir, name);
   fs.writeFileSync(file, JSON.stringify({ resourceSpans: [{ resource: { attributes: [kv("service.name", "check-demo")] }, scopeSpans: [{ scope: { name: "t" }, spans: [span] }] }] }));
+  return file;
+}
+
+/** One trace holding `count` spans that all carry the name the rule matches on. */
+function manySpanFile(name: string, count: number, traceId: string): string {
+  const spans = Array.from({ length: count }, (_, i) => ({
+    traceId,
+    spanId: i.toString(16).padStart(16, "0"),
+    name: "bad",
+    kind: 1,
+    startTimeUnixNano: String(1700000000000000000 + i * 1_000_000),
+    endTimeUnixNano: String(1700000000010000000 + i * 1_000_000),
+    attributes: [kv("neatroots.span.kind", "llm")],
+    status: { code: 1 },
+  }));
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, JSON.stringify({ resourceSpans: [{ resource: { attributes: [kv("service.name", "check-demo")] }, scopeSpans: [{ scope: { name: "t" }, spans }] }] }));
   return file;
 }
 
@@ -93,6 +118,27 @@ describe("a check pattern that runs out of time", () => {
       expect(evidence(checkFiles([file], { dirs: [ruleDir("real", "really-slow", "^(a|aa)+$")], only: ["really-slow"] }))).toEqual([[]]);
       expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toContain("check really-slow:");
     } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("spends one retry budget on the whole scan, not one on every span", () => {
+    // A pattern that is slow on every span rather than descheduled once. The retry has 250 ms for
+    // the scan, so it can only get through a few of the twenty spans; a per-span budget would test
+    // all twenty and stall for 20 x 40 ms.
+    const file = manySpanFile("many.json", 20, "5".repeat(32));
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    try {
+      state.timeouts = 1;
+      state.burnMs = 40;
+      state.calls = 0;
+      const out = checkFiles([file], { dirs: [ruleDir("many", "slow-every-span", "^bad$")], only: ["slow-every-span"] });
+      // Twenty spans plus the first attempt would be 21 calls; the budget stops it around eight.
+      expect(state.calls).toBeLessThanOrEqual(12);
+      expect(evidence(out)).toEqual([[]]);
+      expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toContain("check slow-every-span:");
+    } finally {
+      state.burnMs = 0;
       warn.mockRestore();
     }
   });

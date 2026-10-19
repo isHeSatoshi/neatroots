@@ -7,12 +7,17 @@ import { testWithin } from "../util/regex.js";
 /** How long one check's pattern may run on one span before it is treated as too slow. */
 const MATCH_MS = 50;
 /**
- * The budget for a second attempt. The time limit is wall clock: the watchdog interrupts the script
- * once that much real time has passed, so on a loaded machine a pattern that normally takes a
- * fraction of a millisecond can be descheduled past the first budget. A pattern that also cannot
- * finish this much slower attempt is the catastrophic one the limit is for.
+ * The budget for a second attempt, for the whole scan rather than for each span in it. The time
+ * limit is wall clock: the watchdog interrupts the script once that much real time has passed, so
+ * on a loaded machine a pattern that normally takes a fraction of a millisecond can be descheduled
+ * past the first budget. A pattern that cannot finish even this much slower attempt is the
+ * catastrophic one the limit is for.
+ *
+ * It is a budget for the scan so that a pattern which is merely slow, rather than catastrophic,
+ * cannot spend a retry on every span of a trace. That pattern keeps working, and the price is
+ * bounded by this one number per evaluation instead of by the span count.
  */
-const MATCH_RETRY_MS = MATCH_MS * 5;
+const MATCH_RETRY_MS = 250;
 /**
  * Patterns that ran out of time twice in a row, by check: skipped from then on, so a bad check costs
  * one short stall. Keyed by check as well as pattern, because one check's slow pattern must not
@@ -231,7 +236,7 @@ export function evaluateRule(check: RuleCheck, t: TraceSnapshot, atEnd: boolean,
         if (ok === undefined) throw TIMED_OUT;
         return ok;
       };
-      const scan = (ms: number): SpanInfo[] =>
+      const scan = (ms: number, deadline = Number.POSITIVE_INFINITY): SpanInfo[] =>
         selectSpans(t.spans, r.span).filter((s) => {
           const v =
             r.field === "input"
@@ -249,25 +254,32 @@ export function evaluateRule(check: RuleCheck, t: TraceSnapshot, atEnd: boolean,
           const memo = `${key}\u0000${t.run?.trace_id ?? ""}\u0000${s.id}\u0000${r.field}\u0000${texts.reduce((n, x) => n + x.length, 0)}\u0000${r.field === "finish_reason" ? jsonKey(v) : ""}`;
           const known = matchMemo.get(memo);
           if (known !== undefined) return known;
-          const found = texts.some((x) => test(x, ms));
+          // What is left of the attempt, which only the retry bounds: the first attempt gives each
+          // span its own `ms`, the retry shares one deadline across the scan.
+          const left = Math.min(ms, deadline - Date.now());
+          if (left <= 0) throw TIMED_OUT;
+          const found = texts.some((x) => test(x, left));
           if (matchMemo.size >= 50_000) matchMemo.clear();
           matchMemo.set(memo, found);
           return found;
         });
       // One timeout is a suspicion, not a verdict: it can be the machine, not the pattern. Only a
-      // pattern that also misses the slower second attempt is the one this limit exists for.
+      // pattern that also misses the slower second attempt is the one this limit exists for, and
+      // that attempt gets `MATCH_RETRY_MS` for the whole scan, not for each span in it.
       let hits: SpanInfo[] | undefined;
-      for (const ms of [MATCH_MS, MATCH_RETRY_MS]) {
+      try {
+        hits = scan(MATCH_MS);
+      } catch (e) {
+        if (e !== TIMED_OUT) throw e;
         try {
-          hits = scan(ms);
-          break;
-        } catch (e) {
-          if (e !== TIMED_OUT) throw e;
+          hits = scan(MATCH_RETRY_MS, Date.now() + MATCH_RETRY_MS);
+        } catch (retry) {
+          if (retry !== TIMED_OUT) throw retry;
         }
       }
       if (!hits) {
         tooSlow.add(slowKey);
-        log.warn(`check ${check.id}: its pattern ran out of time twice on one span (${MATCH_MS} ms, then ${MATCH_RETRY_MS} ms), so this check is skipped until neatroots restarts. Simplify the regex (overlapping alternatives in a repeat, like (a|aa)+, are slow).`);
+        log.warn(`check ${check.id}: its pattern ran out of time twice on one span (${MATCH_MS} ms, then ${MATCH_RETRY_MS} ms for the whole scan), so this check is skipped until neatroots restarts. Simplify the regex (overlapping alternatives in a repeat, like (a|aa)+, are slow).`);
         return null;
       }
       if (!hits.length) return null;
