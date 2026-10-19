@@ -205,13 +205,15 @@ export function mountExploreApi(app: Hono, roots: Roots): void {
   });
   app.post("/api/runs/:traceId/replay", async (c) => {
     const traceId = c.req.param("traceId");
-    const b = await body<{ span_id?: string; messages?: { role: string; content: string }[]; edit?: { from: string; to: string }; input?: string; model?: string; system?: string }>(c);
+    const b = await body<{ span_id?: string; messages?: { role: string; content: string }[]; edit?: { from: string; to: string }; input?: string; model?: string; system?: string; tools?: boolean }>(c);
     // The overrides were trusted, so a number as `system` was stored and a non-string `edit.from`
     // failed deep in the replay with a raw TypeError. Checked here, the way the MCP replay tools do.
     const spanId = optStr(b.span_id, "span_id");
     const input = optStr(b.input, "input");
     const model = optStr(b.model, "model");
     const system = optStr(b.system, "system");
+    // A truthy non-boolean ("false", 0) would silently keep the tools on; refuse it up front.
+    const tools = optBool(b.tools, "tools");
     let messages: { role: string; content: string }[] | undefined;
     if (b.messages !== undefined && b.messages !== null) {
       if (!Array.isArray(b.messages)) throw new HTTPException(400, { message: "messages must be an array" });
@@ -223,7 +225,7 @@ export function mountExploreApi(app: Hono, roots: Roots): void {
       edit = { from: str(b.edit.from, "edit.from"), to: str(b.edit.to, "edit.to") };
     }
     try {
-      if (spanId) return c.json(await roots.replays.replayLlm(traceId, spanId, { messages, edit, model: model || undefined, system: system || undefined }));
+      if (spanId) return c.json(await roots.replays.replayLlm(traceId, spanId, { messages, edit, model: model || undefined, system: system || undefined, tools }));
       const { replay } = roots.replays.startRun(traceId, { input, model: model || undefined, system: system || undefined });
       return c.json(replay, 202);
     } catch (e) {
