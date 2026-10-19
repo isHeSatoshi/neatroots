@@ -18,7 +18,7 @@ import { mountAgentsApi } from "./api-agents.js";
 import { importSource, mountExploreApi } from "./api-explore.js";
 import { checkCoverage } from "./coverage.js";
 import { installInfo } from "../util/install.js";
-import { err, body, clampInt } from "./util.js";
+import { err, body, clampInt, str, optBool, optStrArray } from "./util.js";
 import { checkDirState } from "../checks/registry.js";
 import { askRuns } from "../engine/assist.js";
 import { loadTrace } from "../engine/trace.js";
@@ -182,7 +182,8 @@ export function mountApi(app: Hono, roots: Roots): void {
 
   app.post("/api/runs/:traceId/pin", async (c) => {
     const b = await body<{ pinned?: boolean }>(c);
-    roots.store.setPinned(c.req.param("traceId"), b.pinned !== false);
+    // `"false"` is a truthy string, so the old `!== false` pinned the run instead of unpinning it.
+    roots.store.setPinned(c.req.param("traceId"), optBool(b.pinned, "pinned") ?? true);
     return c.json({ ok: true });
   });
 
@@ -274,6 +275,14 @@ export function mountApi(app: Hono, roots: Roots): void {
     if (b.retention_max_gb !== undefined && !inRange(b.retention_max_gb, 0, 10_000, true)) return err(c, 400, "Size cap must be more than 0 GB and at most 10000 GB");
     for (const field of ["forward", "steering_enabled", "jev_cloud_enabled", "laya_enabled"] as const) {
       if (b[field] !== undefined && typeof b[field] !== "boolean") return err(c, 400, `${field} must be a boolean`);
+    }
+    // The string fields were only truthy-checked, so a number was stored as the model or the base
+    // URL and the next GET /api/llm threw on it. Checked here, with the rest, before anything moves.
+    for (const field of ["project", "llm_model", "llm_base_url", "classifier_url", "cloud_endpoint"] as const) {
+      if (b[field] !== undefined && typeof b[field] !== "string") return err(c, 400, `${field} must be a string`);
+    }
+    if (b.redact_patterns !== undefined && (!Array.isArray(b.redact_patterns) || b.redact_patterns.some((p) => typeof p !== "string"))) {
+      return err(c, 400, "redact_patterns must be an array of strings");
     }
     if (b.project && b.steering !== undefined && !STEERING_MODES.includes(b.steering)) return err(c, 400, `steering must be one of ${STEERING_MODES.join(", ")}`);
     if (b.classifier_backend && !["auto", "laya", "jev", "jev-cloud", "llm"].includes(b.classifier_backend)) return err(c, 400, "classifier_backend must be auto, laya, jev, jev-cloud or llm");
@@ -466,11 +475,16 @@ export function mountApi(app: Hono, roots: Roots): void {
   app.post("/api/steer/check", async (c) => {
     if (!engine) return err(c, 503, "engine not running");
     const b = await body<{ trace_id?: string; question?: string; span_ids?: string[] }>(c);
-    if (typeof b.trace_id !== "string" || !b.trace_id || !b.question) return err(c, 400, "trace_id and question required");
+    // A non-string question used to reach the judge and come back as a normal-looking answer.
+    const question = str(b.question, "question").trim();
+    if (typeof b.trace_id !== "string" || !b.trace_id || !question) return err(c, 400, "trace_id and question required");
+    // Read outside the try: the route's catch reports a failed judgement, so a bad type would come
+    // back as 503 with this message instead of the 400 it is.
+    const spanIds = optStrArray(b.span_ids, "span_ids");
     if (!roots.store.getRun(b.trace_id)) return c.json({ probability: null, answer: "unknown", reason: "neatroots has not received spans for this run yet", evidence_span_ids: [] });
     try {
-      const r = await engine.judge(b.trace_id, b.question, { spanIds: b.span_ids });
-      roots.bus.emit("activity", { trace_id: b.trace_id, kind: "self-check", message: b.question });
+      const r = await engine.judge(b.trace_id, question, { spanIds });
+      roots.bus.emit("activity", { trace_id: b.trace_id, kind: "self-check", message: question });
       return c.json({ ...r, answer: r.probability >= 0.5 ? "yes" : "no" });
     } catch (e) {
       // A span id the run doesn't have: say so, like an unknown run, instead of blaming the model.

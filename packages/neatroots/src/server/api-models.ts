@@ -19,6 +19,27 @@ export interface ExternalLlmInput {
 
 /** Applies a change to llm.external, returning an error message when it is invalid. */
 export function applyExternalLlm(cfg: RootsConfig["llm"]["external"], b: ExternalLlmInput): string | undefined {
+  // Types first, before anything is applied: a non-string reached `.trim()` and threw out of the
+  // route as a 500, and a string like "false" was coerced by `!!` into enabling the feature. Only an
+  // absent field is skipped, so a `null` is refused here rather than reaching the `!== undefined`
+  // branches below, which would have called `.trim()` on it.
+  const wrongType = (name: keyof ExternalLlmInput, want: string): string | undefined => {
+    const v = b[name];
+    if (v === undefined) return undefined;
+    if (want === "string" ? typeof v !== "string" : typeof v !== "boolean") return `${name} must be ${want === "string" ? "a string" : "true or false"}`;
+    return undefined;
+  };
+  for (const [name, want] of [
+    ["provider", "string"],
+    ["model", "string"],
+    ["base_url", "string"],
+    ["redact", "string"],
+    ["enabled", "boolean"],
+    ["fallback_to_local", "boolean"],
+  ] as const) {
+    const problem = wrongType(name, want);
+    if (problem) return problem;
+  }
   const next = { ...cfg };
   if (b.provider !== undefined) {
     const p = providerById(b.provider);
