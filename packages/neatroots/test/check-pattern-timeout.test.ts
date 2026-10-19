@@ -74,11 +74,33 @@ function manySpanFile(name: string, count: number, traceId: string): string {
   return file;
 }
 
+/** One trace holding a single span whose output is an MCP result with `parts` text items. */
+function multiPartFile(name: string, parts: number, traceId: string): string {
+  const span = {
+    traceId,
+    spanId: "f".repeat(16),
+    name: "get_weather",
+    kind: 1,
+    startTimeUnixNano: "1700000000000000000",
+    endTimeUnixNano: "1700000000010000000",
+    attributes: [
+      kv("neatlogs.span.kind", "tool"),
+      kv("neatlogs.tool.name", "get_weather"),
+      // Each item is its own text to test, and the whole value is one more after them.
+      kv("neatlogs.tool.output", JSON.stringify({ content: Array.from({ length: parts }, (_, i) => ({ type: "text", text: `part ${i} bad` })) })),
+    ],
+    status: { code: 1 },
+  };
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, JSON.stringify({ resourceSpans: [{ resource: { attributes: [kv("service.name", "check-demo")] }, scopeSpans: [{ scope: { name: "t" }, spans: [span] }] }] }));
+  return file;
+}
+
 /** A checks folder holding one match rule. */
-function ruleDir(name: string, id: string, pattern: string): string {
+function ruleDir(name: string, id: string, pattern: string, field = "name"): string {
   const folder = path.join(dir, name);
   fs.mkdirSync(folder, { recursive: true });
-  fs.writeFileSync(path.join(folder, `${id}.yaml`), `id: ${id}\nkind: rule\nrule: {type: match, field: name, pattern: '${pattern}'}\n`);
+  fs.writeFileSync(path.join(folder, `${id}.yaml`), `id: ${id}\nkind: rule\nrule: {type: match, field: ${field}, pattern: '${pattern}'}\n`);
   return folder;
 }
 
@@ -137,6 +159,28 @@ describe("a check pattern that runs out of time", () => {
       expect(state.calls).toBeLessThanOrEqual(12);
       expect(evidence(out)).toEqual([[]]);
       expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toContain("check slow-every-span:");
+    } finally {
+      state.burnMs = 0;
+      warn.mockRestore();
+    }
+  });
+
+  it("spends the retry budget across one span's text parts, not on each of them", () => {
+    // An MCP result carries several `content[].text` items, and each is its own text to test. The
+    // budget has to be worked out per value: handing every item the whole remainder lets one span
+    // spend it many times over.
+    const file = multiPartFile("parts.json", 12, "6".repeat(32));
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
+    try {
+      state.timeouts = 1;
+      state.burnMs = 40;
+      state.calls = 0;
+      const out = checkFiles([file], { dirs: [ruleDir("parts", "slow-parts", "^bad$", "output")], only: ["slow-parts"] });
+      // 12 text items plus the whole value, plus the first attempt: 14 calls if each got the full
+      // remainder. The budget stops it around eight.
+      expect(state.calls).toBeLessThanOrEqual(12);
+      expect(evidence(out)).toEqual([[]]);
+      expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toContain("check slow-parts:");
     } finally {
       state.burnMs = 0;
       warn.mockRestore();

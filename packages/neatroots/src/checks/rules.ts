@@ -254,11 +254,16 @@ export function evaluateRule(check: RuleCheck, t: TraceSnapshot, atEnd: boolean,
           const memo = `${key}\u0000${t.run?.trace_id ?? ""}\u0000${s.id}\u0000${r.field}\u0000${texts.reduce((n, x) => n + x.length, 0)}\u0000${r.field === "finish_reason" ? jsonKey(v) : ""}`;
           const known = matchMemo.get(memo);
           if (known !== undefined) return known;
-          // What is left of the attempt, which only the retry bounds: the first attempt gives each
-          // span its own `ms`, the retry shares one deadline across the scan.
-          const left = Math.min(ms, deadline - Date.now());
-          if (left <= 0) throw TIMED_OUT;
-          const found = texts.some((x) => test(x, left));
+          // What is left of the attempt, worked out per text value rather than once per span: a
+          // span can carry several (an MCP result's content[].text items, then the whole value),
+          // and each one must not be handed the full budget again. Only the retry has a deadline;
+          // the first attempt gives each value its own `ms`.
+          const left = (): number => {
+            const t = Math.min(ms, deadline - Date.now());
+            if (t <= 0) throw TIMED_OUT;
+            return t;
+          };
+          const found = texts.some((x) => test(x, left()));
           if (matchMemo.size >= 50_000) matchMemo.clear();
           matchMemo.set(memo, found);
           return found;
