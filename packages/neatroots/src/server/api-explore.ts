@@ -42,6 +42,15 @@ export function parseSearch(q: string): { text: string; filters: Record<string, 
 /** The words people type for a run's status, mapped to what runs store. */
 const STATUS: Record<string, string> = { failed: "error", failing: "error", error: "error", errored: "error", ok: "ok", succeeded: "ok", success: "ok", passed: "ok", running: "running", interrupted: "interrupted" };
 
+/**
+ * The words people type for what a run has. `problems` is what the docs and the search box offer;
+ * `finding` is what the rest of neatroots calls the same thing, so it reads the same way here.
+ */
+const HAS: Record<string, "problems" | "finding"> = { problem: "problems", problems: "problems", finding: "finding", findings: "finding" };
+
+/** What `has:` accepts, for the message when a value cannot be read. */
+const HAS_FORMS = "problems or finding";
+
 export function mountExploreApi(app: Hono, roots: Roots): void {
   // ---------------------------------------------------------------- views
 
@@ -69,6 +78,12 @@ export function mountExploreApi(app: Hono, roots: Roots): void {
     // A since: we can't read is refused rather than dropped, which would quietly search every run.
     const since = filters.since !== undefined ? parseSince(filters.since) : undefined;
     if (filters.since !== undefined && since === undefined) return err(c, 400, `since: takes ${SINCE_FORMS}, not "${filters.since}"`);
+    // A `has:` this build cannot read is refused rather than dropped. Dropping it left the search
+    // returning every run while the query still looked filtered: `has:Problems` and `has:PROBLEMS`
+    // both did that, and `has:problems` did not. The words are a fixed vocabulary, so the message
+    // can list them.
+    const has = filters.has !== undefined ? HAS[filters.has.toLowerCase()] : undefined;
+    if (filters.has !== undefined && has === undefined) return err(c, 400, `has: takes ${HAS_FORMS}, not "${filters.has}"`);
     // The store matches every filter and the text in SQL, so the total and the page cover all runs.
     const filter: RunFilter = {
       text: text || undefined,
@@ -76,7 +91,8 @@ export function mountExploreApi(app: Hono, roots: Roots): void {
       status: filters.status && (STATUS[filters.status.toLowerCase()] ?? filters.status),
       sessionId: filters.session,
       checkId: filters.check,
-      hasOpenFinding: filters.has === "problems",
+      hasOpenFinding: has === "problems",
+      hasFinding: has === "finding",
       sinceMs: since,
       spanKind: kind,
       tool: filters.tool,

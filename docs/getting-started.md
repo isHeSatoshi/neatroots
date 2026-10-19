@@ -226,7 +226,8 @@ The **Runs** page lists each run with what it was asked to do and its most impor
 | `tool:`, `model:` | `tool:lookup_order`, `model:gpt-4o` |
 | `check:` | `check:system-prompt-violation` |
 | `session:` | `session:abc123` |
-| `has:problems` | runs with open problems |
+| `has:problems` | runs with an open problem |
+| `has:finding` | runs with a finding, open or resolved |
 | `since:` | `since:30m`, `since:24h`, `since:7d`, `since:2w`, `since:2026-10-01` |
 
 A hit opens the run at that span. Search covers span names, errors, and the first 150,000 and last 50,000 characters of every input and output.

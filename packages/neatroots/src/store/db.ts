@@ -283,6 +283,7 @@ export interface RunFilter {
   workflow?: string;
   status?: string;
   sessionId?: string;
+  /** Runs with any finding, open or resolved. `has:finding` in search reaches this. */
   hasFinding?: boolean;
   /** Runs with an open or resolved finding from this check. */
   checkId?: string;
