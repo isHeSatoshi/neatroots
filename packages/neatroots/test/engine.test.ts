@@ -468,7 +468,8 @@ rule:
   });
 });
 
-describe("planning", () => {  it("makes one plan per workflow when runs start together, and always includes baseline questions", async () => {
+describe("planning", () => {
+  it("makes one plan per workflow when runs start together, and always includes baseline questions", async () => {
     const llm = await mockLlm({ delayMs: 150 });
     const tb = await makeRoots({ llmUrl: llm.url });
     cleanup.push(async () => {
