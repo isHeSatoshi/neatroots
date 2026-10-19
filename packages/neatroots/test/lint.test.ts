@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import { checkWarnings, fitEvidence } from "../src/checks/lint.js";
 import { parseChecks } from "../src/checks/registry.js";
@@ -45,6 +46,51 @@ flag_at: 0.8
 `).checks as QuestionCheck[];
     expect(checkWarnings(c)).toEqual([]);
     expect(fitEvidence(c).scope).toBe("span");
+  });
+
+  it("leaves a per-reply question alone when its evidence is the LLM call itself", () => {
+    // The shipped `system-prompt-violation` is this shape: `scope: span` over `type: [llm]`, asking
+    // whether the reply broke an instruction. The span it is judged on IS the call whose output is
+    // the reply, so it can see what it asks about and must not be widened to the whole run.
+    const [c] = parseChecks(`
+id: system-prompt-violation
+kind: yes_no
+title: Reply broke a system-prompt instruction
+scope: span
+ask: Does this reply break an instruction given in the system prompt? Answer yes only if the reply does something the instruction forbids or skips something it requires.
+evidence:
+  spans: { type: llm }
+  fields: [input, output]
+flag_at: 0.85
+`).checks as QuestionCheck[];
+    expect(checkWarnings(c)).toEqual([]);
+    const fit = fitEvidence(c);
+    expect(fit.scope).toBe("span");
+    expect(fit.evidence).toMatchObject({ spans: { type: "llm" }, fields: ["input", "output"] });
+  });
+
+  it("still widens a per-reply question whose evidence is tool calls only", () => {
+    const [c] = parseChecks(`
+id: reply-after-tool
+kind: yes_no
+scope: span
+ask: Did this reply claim the refund succeeded?
+evidence: { spans: { type: [tool, mcp_tool] }, fields: [input, output] }
+flag_at: 0.8
+`).checks as QuestionCheck[];
+    expect(checkWarnings(c)).toHaveLength(1);
+    expect(checkWarnings(c)[0]).toMatch(/scope: trace/);
+    expect(fitEvidence(c).scope).toBe("trace");
+  });
+
+  it("warns about nothing in the shipped library", () => {
+    // The library is the example people copy, so a warning about it is noise at best.
+    for (const f of ["rules.yaml", "questions.yaml"]) {
+      const r = parseChecks(fs.readFileSync(new URL(`../library/${f}`, import.meta.url), "utf8"));
+      expect(r.errors).toEqual([]);
+      const warned = r.checks.flatMap((c) => checkWarnings(c).map((w) => `${c.id}: ${w}`));
+      expect(warned).toEqual([]);
+    }
   });
 
   it("rejects a choice check whose flag_on is not one of its options", () => {
