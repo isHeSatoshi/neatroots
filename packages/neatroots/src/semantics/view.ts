@@ -253,14 +253,26 @@ function genAiToolDefinitions(attrs: Attrs): string[] | undefined {
   return names.length ? names : undefined;
 }
 
-/** First user turn from pydantic-ai's serialized message list. */
+function userTurnIsToolResult(m: Record<string, Plain>): boolean {
+  const parts = Array.isArray(m.parts) ? m.parts : [];
+  for (const p of parts) {
+    if (!p || typeof p !== "object" || Array.isArray(p)) continue;
+    const t = (p as Record<string, Plain>).type;
+    if (t === "tool_call_response" || t === "tool-result") return true;
+  }
+  return false;
+}
+
+/** First real user turn from pydantic-ai's serialized message list (parts-shaped, not tool results). */
 function pydanticAiFirstUserInput(raw: Plain | undefined): Plain | undefined {
   const msgs = maybeJson(raw);
   if (!Array.isArray(msgs)) return undefined;
   for (const m of msgs) {
     if (!m || typeof m !== "object" || Array.isArray(m)) continue;
-    const role = (m as Record<string, Plain>).role;
-    if (role === "user") return [m];
+    const msg = m as Record<string, Plain>;
+    if (msg.role !== "user") continue;
+    if (userTurnIsToolResult(msg)) continue;
+    return normalizeParts([m]);
   }
   return undefined;
 }
@@ -301,8 +313,8 @@ export function buildView(span: OtlpSpan, resourceAttrs: KeyValue[]): SpanView {
   view.agentName = str(first(attrs, ["neatlogs.agent.name", "agent.name", "gen_ai.agent.name"]));
   view.model = str(first(attrs, ["neatlogs.llm.model_name", "gen_ai.response.model", "gen_ai.request.model", "llm.model_name", "ai.response.model", "ai.model.id", "neatlogs.embedding.model_name"]));
   view.provider = str(first(attrs, ["neatlogs.llm.provider", "neatlogs.provider", "gen_ai.system", "gen_ai.provider.name", "llm.provider", "ai.model.provider"]));
-  view.promptTokens = int(first(attrs, ["neatlogs.llm.token_count.prompt", "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens", "gen_ai.aggregated_usage.input_tokens", "llm.token_count.prompt", "ai.usage.promptTokens", "ai.usage.inputTokens"]));
-  view.completionTokens = int(first(attrs, ["neatlogs.llm.token_count.completion", "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens", "gen_ai.aggregated_usage.output_tokens", "llm.token_count.completion", "ai.usage.completionTokens", "ai.usage.outputTokens"]));
+  view.promptTokens = int(first(attrs, ["neatlogs.llm.token_count.prompt", "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens", "llm.token_count.prompt", "ai.usage.promptTokens", "ai.usage.inputTokens", "gen_ai.aggregated_usage.input_tokens"]));
+  view.completionTokens = int(first(attrs, ["neatlogs.llm.token_count.completion", "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens", "llm.token_count.completion", "ai.usage.completionTokens", "ai.usage.outputTokens", "gen_ai.aggregated_usage.output_tokens"]));
   view.totalTokens =
     int(first(attrs, ["neatlogs.llm.token_count.total", "gen_ai.usage.total_tokens", "llm.token_count.total"])) ??
     (view.promptTokens !== undefined || view.completionTokens !== undefined
