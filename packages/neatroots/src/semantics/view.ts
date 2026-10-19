@@ -248,6 +248,46 @@ function llmToolCalls(attrs: Attrs): SpanView["toolCalls"] {
   }));
 }
 
+/**
+ * Tools a span offered, from the GenAI semconv `gen_ai.tool.definitions`: one JSON array of
+ * definitions as pydantic-ai sends them (`{type, name, description, parameters}`, the name under
+ * `function` in the OpenAI request shape). Without it a run lists only the tools it called.
+ */
+function genAiToolDefinitions(attrs: Attrs): string[] {
+  const v = maybeJson(first(attrs, ["gen_ai.tool.definitions"]));
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const t of v) {
+    if (!t || typeof t !== "object" || Array.isArray(t)) continue;
+    const d = t as Record<string, Plain>;
+    const name = str(d.name) ?? str((d.function as Record<string, Plain> | undefined)?.name);
+    if (name) out.push(name);
+  }
+  return out;
+}
+
+/**
+ * The user's request from a whole conversation, for a span whose own input attributes are empty.
+ * pydantic-ai puts the run in `pydantic_ai.all_messages` as GenAI parts; the first user turn is the
+ * request. A tool result is also a user turn, so one carrying a result is not the request.
+ */
+function firstUserTurn(v: Plain | undefined): string | undefined {
+  const msgs = maybeJson(v);
+  if (!Array.isArray(msgs)) return undefined;
+  for (const m of msgs) {
+    if (!m || typeof m !== "object" || Array.isArray(m)) continue;
+    const msg = m as Record<string, Plain>;
+    if (msg.role !== "user") continue;
+    const parts = Array.isArray(msg.parts) ? (msg.parts as Record<string, Plain>[]) : [];
+    if (parts.some((p) => p && typeof p === "object" && (p.type === "tool_call_response" || p.type === "tool-result"))) continue;
+    const normalized = normalizeParts([msg]) as Record<string, Plain>[];
+    const content = normalized[0]?.content;
+    const text = typeof content === "string" ? content : undefined;
+    if (text && text.trim()) return text;
+  }
+  return undefined;
+}
+
 function exceptionMessage(span: OtlpSpan): string | undefined {
   for (const e of span.events) {
     if (e.name !== "exception") continue;
@@ -259,6 +299,7 @@ function exceptionMessage(span: OtlpSpan): string | undefined {
   return undefined;
 }
 
+/** One span's semantics, read from whichever public attribute convention sent it. */
 export function buildView(span: OtlpSpan, resourceAttrs: KeyValue[]): SpanView {
   const attrs = kvToPlain(span.attributes);
   const res = kvToPlain(resourceAttrs);
@@ -274,10 +315,12 @@ export function buildView(span: OtlpSpan, resourceAttrs: KeyValue[]): SpanView {
   view.agentName = str(first(attrs, ["neatlogs.agent.name", "agent.name", "gen_ai.agent.name"]));
   view.model = str(first(attrs, ["neatlogs.llm.model_name", "gen_ai.response.model", "gen_ai.request.model", "llm.model_name", "ai.response.model", "ai.model.id", "neatlogs.embedding.model_name"]));
   view.provider = str(first(attrs, ["neatlogs.llm.provider", "neatlogs.provider", "gen_ai.system", "gen_ai.provider.name", "llm.provider", "ai.model.provider"]));
-  view.promptTokens = int(first(attrs, ["neatlogs.llm.token_count.prompt", "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens", "llm.token_count.prompt", "ai.usage.promptTokens", "ai.usage.inputTokens"]));
-  view.completionTokens = int(first(attrs, ["neatlogs.llm.token_count.completion", "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens", "llm.token_count.completion", "ai.usage.completionTokens", "ai.usage.outputTokens"]));
+  // `gen_ai.aggregated_usage.*` is an agent span's sum over its calls, so it goes last in each
+  // list: a span that also carries a per-call count keeps reading that one.
+  view.promptTokens = int(first(attrs, ["neatlogs.llm.token_count.prompt", "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens", "llm.token_count.prompt", "ai.usage.promptTokens", "ai.usage.inputTokens", "gen_ai.aggregated_usage.input_tokens"]));
+  view.completionTokens = int(first(attrs, ["neatlogs.llm.token_count.completion", "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens", "llm.token_count.completion", "ai.usage.completionTokens", "ai.usage.outputTokens", "gen_ai.aggregated_usage.output_tokens"]));
   view.totalTokens =
-    int(first(attrs, ["neatlogs.llm.token_count.total", "gen_ai.usage.total_tokens", "llm.token_count.total"])) ??
+    int(first(attrs, ["neatlogs.llm.token_count.total", "gen_ai.usage.total_tokens", "llm.token_count.total", "gen_ai.aggregated_usage.total_tokens"])) ??
     (view.promptTokens !== undefined || view.completionTokens !== undefined
       ? (view.promptTokens ?? 0) + (view.completionTokens ?? 0)
       : undefined);
@@ -304,7 +347,8 @@ export function buildView(span: OtlpSpan, resourceAttrs: KeyValue[]): SpanView {
         view.output = [{ role: "assistant", tool_calls: view.toolCalls.map((c) => ({ id: c.id ?? null, name: c.name, arguments: c.arguments })) }];
       }
       const tools = collectIndexed(attrs, "neatlogs.llm.tools").map((t) => str(t.name)).filter((x): x is string => !!x);
-      if (tools.length) view.tools = tools;
+      const offered = [...new Set([...tools, ...genAiToolDefinitions(attrs)])];
+      if (offered.length) view.tools = offered;
       break;
     }
     case "TOOL":
@@ -317,8 +361,10 @@ export function buildView(span: OtlpSpan, resourceAttrs: KeyValue[]): SpanView {
       view.output = maybeJson(first(attrs, ["neatlogs.workflow.output", ...genericOut]));
       break;
     case "AGENT":
-      view.input = maybeJson(first(attrs, ["neatlogs.agent.input", ...genericIn, "ai.prompt"]));
-      view.output = maybeJson(first(attrs, ["neatlogs.agent.output", ...genericOut, "ai.response.text"]));
+      // pydantic-ai's own instrumentation names neither of these: the answer is `final_result` and
+      // the conversation `pydantic_ai.all_messages`, and the run's previews come from this span.
+      view.input = maybeJson(first(attrs, ["neatlogs.agent.input", ...genericIn, "ai.prompt"])) ?? firstUserTurn(attrs["pydantic_ai.all_messages"]);
+      view.output = maybeJson(first(attrs, ["neatlogs.agent.output", ...genericOut, "ai.response.text", "final_result"]));
       break;
     case "RETRIEVER":
       view.input = maybeJson(first(attrs, ["neatlogs.retriever.query", ...genericIn]));
