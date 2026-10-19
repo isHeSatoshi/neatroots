@@ -83,6 +83,77 @@ flag_at: 0.8
     expect(fitEvidence(c).scope).toBe("trace");
   });
 
+  it("widens a per-reply question that reads only the input, where the reply is not described", () => {
+    const [c] = parseChecks(`
+id: input-only
+kind: yes_no
+scope: span
+ask: Did this reply claim the refund succeeded?
+evidence: { spans: { type: llm }, fields: [input] }
+flag_at: 0.8
+`).checks as QuestionCheck[];
+    expect(checkWarnings(c)).toHaveLength(1);
+    expect(fitEvidence(c).scope).toBe("trace");
+  });
+
+  it("widens a per-reply question with no span selector, which also queues tool calls", () => {
+    // An omitted selector matches every span, tool calls included, and a tool call's evidence is
+    // the tool result rather than a reply.
+    for (const evidence of ["", "evidence: { fields: [input, output] }", "evidence: { spans: {}, fields: [input, output] }"]) {
+      const [c] = parseChecks(`
+id: no-selector
+kind: yes_no
+scope: span
+ask: Did this reply claim the refund succeeded?
+${evidence}
+flag_at: 0.8
+`).checks as QuestionCheck[];
+      expect(checkWarnings(c), evidence || "no evidence block").toHaveLength(1);
+      expect(fitEvidence(c).scope).toBe("trace");
+    }
+  });
+
+  it("widens a per-reply question whose selector can also match tool calls", () => {
+    const [c] = parseChecks(`
+id: mixed-selector
+kind: yes_no
+scope: span
+ask: Did this reply claim the refund succeeded?
+evidence: { spans: { type: [llm, tool] }, fields: [input, output] }
+flag_at: 0.8
+`).checks as QuestionCheck[];
+    expect(checkWarnings(c)).toHaveLength(1);
+    expect(fitEvidence(c).scope).toBe("trace");
+  });
+
+  it("leaves a per-reply question alone when it asks for the run's final answer", () => {
+    // `final_output` puts the final answer in the text whatever span is being judged, so even a
+    // tool-only selector can see what the question asks about.
+    const [c] = parseChecks(`
+id: with-final-output
+kind: yes_no
+scope: span
+ask: Did this reply claim the refund succeeded?
+evidence: { spans: { type: [tool] }, fields: [input], final_output: true }
+flag_at: 0.8
+`).checks as QuestionCheck[];
+    expect(checkWarnings(c)).toEqual([]);
+    expect(fitEvidence(c).scope).toBe("span");
+  });
+
+  it("reads the selector type case-insensitively, as the engine does", () => {
+    const [c] = parseChecks(`
+id: upper-llm
+kind: yes_no
+scope: span
+ask: Did this reply claim the refund succeeded?
+evidence: { spans: { type: LLM }, fields: [input, output] }
+flag_at: 0.8
+`).checks as QuestionCheck[];
+    expect(checkWarnings(c)).toEqual([]);
+    expect(fitEvidence(c).scope).toBe("span");
+  });
+
   it("warns about nothing in the shipped library", () => {
     // The library is the example people copy, so a warning about it is noise at best.
     for (const f of ["rules.yaml", "questions.yaml"]) {
