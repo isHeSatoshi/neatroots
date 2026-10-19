@@ -1146,7 +1146,19 @@ ${library}`;
     if (opts.spanIds?.length) {
       const spans = pickSpans(snap.spans, opts.spanIds, traceId);
       const g = runGoal(snap);
-      text = [g.user ? `User request: ${clip(g.user, 600)}` : "", "Spans:", ...spans.map((s) => describeSpan(s, ["input", "output", "status", "error"]))].filter(Boolean).join("\n");
+      // The run's instructions are stated here because `describeSpan` -> `latestMessages` leaves
+      // them out of each span's messages, on the assumption that the goal provides them once.
+      // Selecting a span used to drop them altogether, so "did the agent break its instructions?"
+      // was asked without the instructions in the text. The whole-run branch below gets them from
+      // `buildEvidence`, which states the same two lines with the same bounds.
+      text = [
+        g.system ? `System prompt: ${clip(g.system, 900)}` : "",
+        g.user ? `User request: ${clip(g.user, 600)}` : "",
+        "Spans:",
+        ...spans.map((s) => describeSpan(s, ["input", "output", "status", "error"])),
+      ]
+        .filter(Boolean)
+        .join("\n");
       spanIds = spans.map((s) => s.id);
     } else {
       const ev = buildEvidence(snap, { fields: ["input", "output", "status", "error"], last: 15, final_output: snap.run?.status !== "running" });
