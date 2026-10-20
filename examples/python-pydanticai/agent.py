@@ -26,8 +26,10 @@ import sys
 from urllib.parse import urlparse
 
 if os.environ.get("REAL_LLM") != "1":  # neatroots' mock LLM (neatroots mock-llm); REAL_LLM=1 uses your own key
-    os.environ.setdefault("OPENAI_BASE_URL", os.environ.get("MOCK_LLM_URL", "http://127.0.0.1:4110/v1"))
-    os.environ.setdefault("OPENAI_API_KEY", "mock")
+    # Set, not setdefault, as in the other examples: an OPENAI_BASE_URL already in the shell must not
+    # send the mock conversation to that provider.
+    os.environ["OPENAI_BASE_URL"] = os.environ.get("MOCK_LLM_URL", "http://127.0.0.1:4110/v1")
+    os.environ["OPENAI_API_KEY"] = "mock"
 
 from opentelemetry import trace  # noqa: E402
 from opentelemetry.sdk.resources import Resource  # noqa: E402

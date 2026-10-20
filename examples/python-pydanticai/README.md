@@ -24,6 +24,6 @@ What lands in neatroots:
   with the model, per-call token counts, the conversation on each LLM span, and the session id.
 - The run's input and output previews, the tools offered (called or not) and the agent span's own
   token counts come from `final_result`, `pydantic_ai.all_messages`, `gen_ai.tool.definitions` and
-  `gen_ai.aggregated_usage.*`, which neatroots reads as of #470.
+  `gen_ai.aggregated_usage.*`, which neatroots reads once #445 (the fix for #443) lands.
 - The failure scenario (`MODEL=mock-sloppy` with an unknown order) has the agent claim success
   after a tool reported `404`, so `soft-tool-failure` and the honesty checks have something to find.
