@@ -144,6 +144,16 @@ describe("replay", () => {
       { role: "tool", tool_call_id: "call_9", content: '{"status":"shipped"}' },
     ]);
     expect(sent.tools.map((x: { function: { name: string } }) => x.function.name)).toEqual(["lookup_order"]);
+    // The new run's span is the lossless record of what was sent: the replay's own `overrides`
+    // summary keeps only role and content for the panel's label, the span keeps the whole turn.
+    const replayed = loadTrace(t.roots.store, r.new_trace_id!);
+    const llmCall = replayed.spans.find((sp) => sp.kind === "LLM")!;
+    expect(llmCall.input).toMatchObject([
+      { role: "user", content: "Please refund order 2002" },
+      { role: "assistant", tool_calls: [{ id: "call_9", name: "lookup_order" }] },
+      { role: "tool", tool_call_id: "call_9", content: '{"status":"shipped"}' },
+    ]);
+    expect(llmCall.toolDefinitions?.map((d) => d.name)).toEqual(["lookup_order"]);
   });
 
   it("sends edited messages as plain turns when the replay asks for no tools", async () => {
