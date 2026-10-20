@@ -1,10 +1,10 @@
 # /// script
 # requires-python = ">=3.11"   # pydantic-ai 2.x needs 3.11+; uv downloads one if the system python is older
 # dependencies = [
-#   "pydantic-ai>=2.57,<3",
-#   "opentelemetry-sdk>=1.27",
-#   "opentelemetry-exporter-otlp-proto-http>=1.27",
-#   "opentelemetry-exporter-otlp-proto-grpc>=1.27",
+#   "pydantic-ai==2.58.0",
+#   "opentelemetry-sdk==1.45.1",
+#   "opentelemetry-exporter-otlp-proto-http==1.45.1",
+#   "opentelemetry-exporter-otlp-proto-grpc==1.45.1",
 # ]
 # ///
 """A PydanticAI tool-calling agent traced by pydantic-ai's own OpenTelemetry instrumentation,
@@ -93,6 +93,8 @@ def issue_refund(order_id: str, amount: float) -> str:
 
 
 if __name__ == "__main__":
-    result = agent.run_sync(" ".join(sys.argv[1:]) or "Please refund order 1001")
-    print(result.output)
-    provider.shutdown()  # flush the spans before exiting
+    try:
+        result = agent.run_sync(" ".join(sys.argv[1:]) or "Please refund order 1001")
+        print(result.output)
+    finally:
+        provider.shutdown()  # flush the spans before exiting, even when the run raised
