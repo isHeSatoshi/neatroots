@@ -17,8 +17,11 @@ import { log } from "../util/log.js";
 // answered by its findings.
 
 export interface ReplayOverrides {
-  /** LLM replay: the messages to send instead of the span's. */
-  messages?: { role: string; content: string }[];
+  /**
+   * LLM replay: the messages to send instead of the span's, in the shape the app read them from the
+   * span, so a tool turn keeps its `tool_calls` / `tool_call_id` and `toChat` can normalize them.
+   */
+  messages?: Plain[];
   /** LLM replay: change one recorded message (matched by its text) and keep the rest. */
   edit?: { from: string; to: string };
   /** Run replay: the user input to run the agent with. */
@@ -212,7 +215,9 @@ export class Replays {
     if (span.kind !== "LLM") throw new Error("only LLM spans can be replayed on their own; replay the whole run instead");
     // The recorded tools go back with the call unless the caller asked for a text-only replay.
     const tools = overrides.tools === false ? [] : (span.toolDefinitions ?? []);
-    const messages: ChatMessage[] = overrides.messages?.length ? toChat(overrides.messages as Plain) : toChat(span.input, { structuredToolTurns: tools.length > 0 });
+    // Edited messages come from the app, so they carry tool fields the same way the recorded ones
+    // do; both paths keep the tool shape whenever the recorded tools are offered again.
+    const messages: ChatMessage[] = toChat(overrides.messages?.length ? overrides.messages : span.input, { structuredToolTurns: tools.length > 0 });
     if (overrides.edit) {
       const { from, to } = overrides.edit;
       const i = messages.findIndex((m) => m.content === from) >= 0 ? messages.findIndex((m) => m.content === from) : messages.findIndex((m) => m.content.trim() === from.trim());

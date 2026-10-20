@@ -2,7 +2,7 @@ import os from "node:os";
 import Anthropic from "@anthropic-ai/sdk";
 import type { RootsConfig } from "../config.js";
 import { log } from "../util/log.js";
-import { BUILTIN_RULES, compileRules, CREDENTIAL_KINDS, RedactionPatternError, redactString, type RedactionRule } from "../relay/redact.js";
+import { BUILTIN_RULES, compileRules, CREDENTIAL_KINDS, RedactionPatternError, redactJsonStrings, redactString, type RedactionRule } from "../relay/redact.js";
 import { isLocalUrl, llmKeyName, providerById, strictSchema, type ProviderPreset } from "./providers.js";
 import { trimSlash } from "../util/url.js";
 
@@ -712,13 +712,22 @@ export class LlmClient {
     for (const t of targets) {
       try {
         const redact = this.redactFor(t);
+        // Tool definitions go off the machine too: redact their descriptions and schemas like the
+        // messages. The local LLM gets them as recorded, since nothing leaves this machine.
+        const tools = t === this.local || !opts.tools?.length
+          ? opts.tools
+          : opts.tools.map((d) => ({
+              ...d,
+              ...(d.description !== undefined ? { description: redact(d.description) } : {}),
+              ...(d.parameters !== undefined ? { parameters: redactJsonStrings(d.parameters, redact) as Record<string, unknown> } : {}),
+            }));
         const r = await t.send(
           messages.map((m) => ({
             ...m,
             content: redact(m.content),
             ...(m.tool_calls ? { tool_calls: m.tool_calls.map((c) => ({ ...c, arguments: redact(c.arguments) })) } : {}),
           })),
-          opts,
+          tools === opts.tools ? opts : { ...opts, tools },
         );
         log.debug(`llm ${r.where} ${r.model} ${r.latencyMs}ms ${r.text.slice(0, 80).replace(/\n/g, " ")}`);
         return r;

@@ -102,6 +102,45 @@ describe("hosted OpenAI-compatible provider", () => {
     expect(calls[1].body.response_format.json_schema.strict).toBe(false);
   });
 
+  it("redacts tool definitions before they go to a hosted provider", async () => {
+    const srv = await mock((r) => (r.path.endsWith("/models") ? { json: { data: [{ id: "remote-model" }] } } : { json: chatReply("ok") }));
+    closers.push(srv.close);
+    const llm = new LlmClient(
+      cfgWith((c) => Object.assign(c.external, { enabled: true, provider: "custom", baseUrl: `${srv.url}/v1`, model: "remote-model" })),
+      { secret: async (n) => (n === "llm-api-key-custom" ? "test-key-123456" : undefined) },
+    );
+    const secret = "sk-abcdefghijklmnopqrstuvwx";
+    await llm.chat([{ role: "user", content: "hi" }], {
+      tools: [{ name: "lookup", description: `look up with ${secret}`, parameters: { type: "object", properties: { token: { type: "string", default: secret } } } }],
+    });
+    const call = srv.seen.filter((s) => s.path.endsWith("/chat/completions")).at(-1)!;
+    const def = call.body.tools[0].function;
+    expect(def.name).toBe("lookup");
+    expect(def.description).toContain("[redacted:api_key]");
+    expect(def.description).not.toContain(secret);
+    // A schema keeps its shape: only the strings inside it are replaced.
+    expect(def.parameters.type).toBe("object");
+    expect(def.parameters.properties.token.type).toBe("string");
+    expect(def.parameters.properties.token.default).toContain("[redacted:api_key]");
+    expect(def.parameters.properties.token.default).not.toContain(secret);
+  });
+
+  it("sends tool definitions as recorded when the LLM is on this machine", async () => {
+    const srv = await mock((r) => (r.path.endsWith("/models") ? { json: { data: [{ id: "local-model" }] } } : { json: chatReply("ok") }));
+    closers.push(srv.close);
+    const llm = new LlmClient(
+      cfgWith((c) => {
+        c.baseUrl = `${srv.url}/v1`;
+        c.model = "local-model";
+      }),
+      { secret: async () => undefined },
+    );
+    const secret = "sk-abcdefghijklmnopqrstuvwx";
+    await llm.chat([{ role: "user", content: "hi" }], { tools: [{ name: "lookup", description: `look up with ${secret}` }] });
+    const call = srv.seen.filter((s) => s.path.endsWith("/chat/completions")).at(-1)!;
+    expect(call.body.tools[0].function.description).toBe(`look up with ${secret}`);
+  });
+
   it("falls back to the local LLM when the provider rejects the key", async () => {
     const remote = await mock(() => ({ status: 401, json: { error: "bad key" } }));
     const local = await mock((r) => (r.path.endsWith("/models") ? { json: { data: [{ id: "local-model" }] } } : { json: { ...chatReply("local answer"), model: "local-model" } }));
