@@ -9,7 +9,8 @@ same way.
     MODEL=mock-sloppy uv run agent.py "Please refund order 4512"   # claims success after a failed tool
 
 ```bash
-neatroots start && neatroots mock-llm   # in other terminals
+neatroots start        # terminal 1, stays in the foreground
+neatroots mock-llm     # terminal 2
 uv run agent.py
 ```
 
