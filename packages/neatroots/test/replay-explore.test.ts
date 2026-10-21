@@ -143,17 +143,30 @@ describe("replay", () => {
       { role: "assistant", tool_calls: [{ id: "call_9", type: "function", function: { name: "lookup_order", arguments: '{"order_id":"2002"}' } }] },
       { role: "tool", tool_call_id: "call_9", content: '{"status":"shipped"}' },
     ]);
-    expect(sent.tools.map((x: { function: { name: string } }) => x.function.name)).toEqual(["lookup_order"]);
+    // The recorded tools go back whole: a name-only definition would drop the description and
+    // schema the model needs to fill the arguments.
+    expect(sent.tools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "lookup_order",
+          description: "Look up an order",
+          parameters: { type: "object", properties: { order_id: { type: "string" } } },
+        },
+      },
+    ]);
     // The new run's span is the lossless record of what was sent: the replay's own `overrides`
     // summary keeps only role and content for the panel's label, the span keeps the whole turn.
     const replayed = loadTrace(t.roots.store, r.new_trace_id!);
     const llmCall = replayed.spans.find((sp) => sp.kind === "LLM")!;
     expect(llmCall.input).toMatchObject([
       { role: "user", content: "Please refund order 2002" },
-      { role: "assistant", tool_calls: [{ id: "call_9", name: "lookup_order" }] },
+      { role: "assistant", tool_calls: [{ id: "call_9", name: "lookup_order", arguments: '{"order_id":"2002"}' }] },
       { role: "tool", tool_call_id: "call_9", content: '{"status":"shipped"}' },
     ]);
-    expect(llmCall.toolDefinitions?.map((d) => d.name)).toEqual(["lookup_order"]);
+    expect(llmCall.toolDefinitions).toEqual([
+      { name: "lookup_order", description: "Look up an order", parameters: { type: "object", properties: { order_id: { type: "string" } } } },
+    ]);
   });
 
   it("sends edited messages as plain turns when the replay asks for no tools", async () => {
