@@ -39,8 +39,13 @@ if os.environ.get("OTLP_PROTOCOL") == "grpc":
     # so a bare host:port and https:// get TLS and authorization headers
     # (OTEL_EXPORTER_OTLP_TRACES_HEADERS) do not cross the network in the clear by default, while
     # an http:// endpoint still means plaintext was asked for by name.
-    local = urlparse(endpoint if "://" in endpoint else "//" + endpoint).hostname in ("localhost", "127.0.0.1", "::1")
-    exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True if local else None)
+    try:
+        # The // gives urlparse a host to read. .hostname raises on an endpoint it cannot parse,
+        # such as an unclosed IPv6 bracket, and one it cannot read is not this machine.
+        host = urlparse(endpoint if "://" in endpoint else "//" + endpoint).hostname
+    except ValueError:
+        host = None
+    exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True if host in ("localhost", "127.0.0.1", "::1") else None)
 else:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
